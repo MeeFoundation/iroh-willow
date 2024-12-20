@@ -9,11 +9,14 @@ use iroh_blobs::store::{Map, MapEntry};
 use iroh_io::AsyncSliceReaderExt;
 use iroh_willow::{
     form::EntryForm,
-    interest::{CapSelector, DelegateTo, Interests, IntoAreaOfInterest, RestrictArea},
+    interest::{
+        AreaSelector, CapSelector, DelegateTo, Interests, IntoAreaOfInterest, RestrictArea,
+        UserSelector,
+    },
     proto::{
-        data_model::{Path, PathExt},
+        data_model::{NamespaceId, Path, PathExt},
         grouping::{Area, AreaExt, Range3d},
-        keys::NamespaceKind,
+        keys::{NamespaceKind, UserId},
     },
     session::{
         intents::{Completion, EventKind},
@@ -21,6 +24,8 @@ use iroh_willow::{
     },
 };
 use meadowcap::AccessMode;
+use tokio::time::sleep;
+use util::spawn_three;
 
 use self::util::{create_rng, insert, setup_and_delegate, spawn_two, Peer};
 
@@ -496,6 +501,43 @@ mod util {
         Ok(peers)
     }
 
+    pub async fn spawn_three(rng: &mut impl CryptoRngCore) -> Result<[Peer; 3]> {
+        let peers = [
+            iroh::key::SecretKey::generate_with_rng(rng),
+            iroh::key::SecretKey::generate_with_rng(rng),
+            iroh::key::SecretKey::generate_with_rng(rng),
+        ]
+        .map(|secret_key| Peer::spawn(secret_key, Default::default()))
+        .try_join()
+        .await?;
+
+        peers[0]
+            .endpoint
+            .add_node_addr(peers[1].endpoint.node_addr().await?)?;
+
+        peers[0]
+            .endpoint
+            .add_node_addr(peers[2].endpoint.node_addr().await?)?;
+
+        peers[1]
+            .endpoint
+            .add_node_addr(peers[0].endpoint.node_addr().await?)?;
+
+        peers[1]
+            .endpoint
+            .add_node_addr(peers[2].endpoint.node_addr().await?)?;
+
+        peers[2]
+            .endpoint
+            .add_node_addr(peers[0].endpoint.node_addr().await?)?;
+
+        peers[2]
+            .endpoint
+            .add_node_addr(peers[1].endpoint.node_addr().await?)?;
+
+        Ok(peers)
+    }
+
     pub async fn setup_and_delegate(
         alfie: &Engine,
         betty: &Engine,
@@ -608,6 +650,436 @@ async fn peer_manager_big_payload() -> Result<()> {
     assert!(actual == payload);
 
     [alfie, betty].map(Peer::shutdown).try_join().await?;
+
+    Ok(())
+}
+
+async fn delegate_path(
+    path: Path,
+    alfie: Peer,
+    betty: Peer,
+    user_alfie: UserId,
+    user_betty: UserId,
+    namespace_id: NamespaceId,
+    session_mode: SessionMode,
+) {
+    let restricted_area = Area::new_path(path.clone());
+
+    let cap_for_betty = alfie
+        .delegate_caps(
+            CapSelector::any(namespace_id),
+            AccessMode::Read,
+            DelegateTo::new(user_betty, RestrictArea::Restrict(restricted_area.clone())),
+        )
+        .await
+        .unwrap();
+
+    betty.import_caps(cap_for_betty).await.unwrap();
+
+    let entry = EntryForm::new_bytes(namespace_id, path.clone(), "foo");
+
+    alfie.insert_entry(entry, user_alfie).await.unwrap();
+
+    let cap_selector = CapSelector::new(
+        namespace_id,
+        UserSelector::Any,
+        AreaSelector::ContainsArea(restricted_area.clone()),
+    );
+
+    let interest = Interests::builder()
+        .add_area(cap_selector.clone(), vec![restricted_area])
+        .build();
+
+    let init = SessionInit::new(interest, session_mode);
+
+    let mut intent = betty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+
+    intent.complete().await.unwrap();
+
+    intent.close().await;
+}
+
+#[ignore = "failing test - potential bug in the willow implementation"]
+#[tokio::test(flavor = "multi_thread")]
+async fn subsequent_cap_delegations() {
+    iroh_test::logging::setup_multithreaded();
+    let mut rng = create_rng("subsequent_cap_delegations");
+
+    let [alfie, betty] = spawn_two(&mut rng).await.unwrap();
+
+    let user_alfie = alfie.create_user().await.unwrap();
+    let user_betty = betty.create_user().await.unwrap();
+
+    let namespace_id = alfie
+        .create_namespace(NamespaceKind::Owned, user_alfie)
+        .await
+        .unwrap();
+
+    let shared_path1 = Path::from_bytes(&[b"1"]).unwrap();
+    let shared_path2 = Path::from_bytes(&[b"2"]).unwrap();
+
+    tokio::spawn({
+        let alfie = alfie.clone();
+        let betty = betty.clone();
+
+        async move {
+            delegate_path(
+                shared_path1,
+                alfie,
+                betty,
+                user_alfie,
+                user_betty,
+                namespace_id,
+                SessionMode::Continuous,
+            )
+            .await;
+        }
+    });
+
+    loop {
+        let entries: Vec<_> = betty
+            .get_entries(namespace_id, Range3d::new_full())
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        tracing::info!("len should be 1, actual: {}", entries.len());
+
+        if entries.len() == 1 {
+            break;
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+
+    tokio::spawn({
+        let alfie = alfie.clone();
+        let betty = betty.clone();
+
+        async move {
+            delegate_path(
+                shared_path2,
+                alfie,
+                betty,
+                user_alfie,
+                user_betty,
+                namespace_id,
+                SessionMode::Continuous,
+            )
+            .await;
+        }
+    });
+
+    loop {
+        let entries: Vec<_> = betty
+            .get_entries(namespace_id, Range3d::new_full())
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        tracing::info!("len should be 2, actual: {}", entries.len());
+
+        if entries.len() == 2 {
+            break;
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[ignore = "failing test - potential bug in the willow implementation"]
+#[tokio::test(flavor = "multi_thread")]
+async fn mutual_cap_delegations() {
+    iroh_test::logging::setup_multithreaded();
+    let mut rng = create_rng("mutual_cap_delegations");
+
+    let [alfie, betty] = spawn_two(&mut rng).await.unwrap();
+
+    let user_alfie = alfie.create_user().await.unwrap();
+    let user_betty = betty.create_user().await.unwrap();
+
+    let namespace_id = alfie
+        .create_namespace(NamespaceKind::Owned, user_alfie)
+        .await
+        .unwrap();
+
+    let alfie_path = Path::from_bytes(&[b"a"]).unwrap();
+    let betty_path = Path::from_bytes(&[b"b"]).unwrap();
+
+    tokio::spawn({
+        let alfie = alfie.clone();
+        let betty = betty.clone();
+        let alfie_path = alfie_path.clone();
+
+        async move {
+            delegate_path(
+                alfie_path,
+                alfie,
+                betty,
+                user_alfie,
+                user_betty,
+                namespace_id,
+                SessionMode::Continuous,
+            )
+            .await;
+        }
+    });
+
+    loop {
+        let entries: Vec<_> = betty
+            .get_entries(namespace_id, Range3d::new_full())
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        tracing::info!("alfie path delegated to betty: {:?}", entries);
+
+        if entries.iter().any(|e| e.entry().path() == &alfie_path) {
+            break;
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+
+    tokio::spawn({
+        let alfie = alfie.clone();
+        let betty = betty.clone();
+        let betty_path = betty_path.clone();
+
+        async move {
+            delegate_path(
+                betty_path,
+                betty,
+                alfie,
+                user_betty,
+                user_alfie,
+                namespace_id,
+                SessionMode::Continuous,
+            )
+            .await;
+        }
+    });
+
+    loop {
+        let entries: Vec<_> = alfie
+            .get_entries(namespace_id, Range3d::new_full())
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        tracing::info!("Betty path delegated to Alfie: {:?}", entries);
+
+        if entries.iter().any(|e| e.entry().path() == &betty_path) {
+            break;
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transitive_sync() -> Result<()> {
+    iroh_test::logging::setup_multithreaded();
+    let mut rng = create_rng("transitive_sync");
+
+    let [alfie, betty, catty] = spawn_three(&mut rng).await?;
+
+    let user_alfie = alfie.create_user().await?;
+    let user_betty = betty.create_user().await?;
+    let user_catty = catty.create_user().await?;
+
+    let namespace_id = alfie
+        .create_namespace(NamespaceKind::Owned, user_alfie)
+        .await?;
+
+    let a_path = Path::from_bytes(&[b"a"])?;
+    let b_path = Path::from_bytes(&[b"b"])?;
+
+    // issue read cap from aflie to betty
+
+    let cap_for_betty = alfie
+        .delegate_caps(
+            CapSelector::any(namespace_id),
+            AccessMode::Read,
+            DelegateTo::new(user_betty, RestrictArea::None),
+        )
+        .await?;
+
+    betty.import_caps(cap_for_betty).await?;
+
+    let entry = EntryForm::new_bytes(namespace_id, a_path.clone(), "a_path");
+
+    alfie.insert_entry(entry, user_alfie).await?;
+
+    // sync alfie with betty
+
+    let cap_selector = CapSelector::new(namespace_id, UserSelector::Any, AreaSelector::Widest);
+
+    let interest = Interests::builder()
+        .add_area(cap_selector.clone(), vec![Area::new_full()])
+        .build();
+
+    let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
+
+    let mut intent = betty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+
+    intent.complete().await.unwrap();
+
+    // issue read cap from betty to catty
+
+    let cap_for_catty = betty
+        .delegate_caps(
+            CapSelector::any(namespace_id),
+            AccessMode::Read,
+            DelegateTo::new(user_catty, RestrictArea::None),
+        )
+        .await?;
+
+    catty.import_caps(cap_for_catty).await?;
+
+    // update alfie's data
+
+    let entry = EntryForm::new_bytes(namespace_id, b_path.clone(), "b_path");
+
+    alfie.insert_entry(entry, user_alfie).await?;
+
+    // close betty app
+
+    betty.shutdown().await?;
+
+    //sync catty with alfie
+
+    let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
+
+    let mut intent = catty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+
+    intent.complete().await.unwrap();
+
+    //check catty's entries
+
+    let entries: Vec<_> = catty
+        .get_entries(namespace_id, Range3d::new_full())
+        .await?
+        .try_collect()
+        .await?;
+
+    tracing::warn!("Catty after sync: {:#?}", entries);
+
+    let caps: Vec<_> = catty.list_read_caps().await?;
+
+    tracing::warn!("Catty's caps: {:#?}", caps);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_with_replica() -> Result<()> {
+    iroh_test::logging::setup_multithreaded();
+    let mut rng = create_rng("sync_with_replica");
+
+    let [alfie, betty, catty] = spawn_three(&mut rng).await?;
+
+    let user_alfie = alfie.create_user().await?;
+    let user_betty = betty.create_user().await?;
+    let user_catty = catty.create_user().await?;
+
+    let namespace_id = alfie
+        .create_namespace(NamespaceKind::Owned, user_alfie)
+        .await?;
+
+    let a_path = Path::from_bytes(&[b"a"])?;
+    let b_path = Path::from_bytes(&[b"b"])?;
+
+    // issue read cap from aflie to betty
+
+    let cap_for_betty = alfie
+        .delegate_caps(
+            CapSelector::any(namespace_id),
+            AccessMode::Write,
+            DelegateTo::new(user_betty, RestrictArea::None),
+        )
+        .await?;
+
+    let cap_for_catty = alfie
+        .delegate_caps(
+            CapSelector::any(namespace_id),
+            AccessMode::Read,
+            DelegateTo::new(user_catty, RestrictArea::None),
+        )
+        .await?;
+
+    betty.import_caps(cap_for_betty).await?;
+    catty.import_caps(cap_for_catty).await?;
+
+    let entry = EntryForm::new_bytes(namespace_id, a_path.clone(), "a_path");
+
+    alfie.insert_entry(entry, user_alfie).await?;
+
+    // sync alfie with betty
+
+    let cap_selector = CapSelector::new(namespace_id, UserSelector::Any, AreaSelector::Widest);
+
+    let interest = Interests::builder()
+        .add_area(cap_selector.clone(), vec![Area::new_full()])
+        .build();
+
+    let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
+
+    let mut intent = betty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+
+    intent.complete().await.unwrap();
+
+    // issue read cap from betty to catty
+
+    let cap_for_catty = betty
+        .delegate_caps(
+            CapSelector::any(namespace_id),
+            AccessMode::Read,
+            DelegateTo::new(user_catty, RestrictArea::None),
+        )
+        .await?;
+
+    catty.import_caps(cap_for_catty).await?;
+
+    // update alfie's data via betty node
+
+    let entry = EntryForm::new_bytes(namespace_id, b_path.clone(), "b_path");
+
+    betty.insert_entry(entry, user_betty).await?;
+
+    // close alfie app
+
+    alfie.shutdown().await?;
+
+    //sync catty with alfie
+
+    let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
+
+    let mut intent = catty.sync_with_peer(betty.node_id(), init).await.unwrap();
+
+    intent.complete().await.unwrap();
+
+    //check catty's entries
+
+    let entries: Vec<_> = catty
+        .get_entries(namespace_id, Range3d::new_full())
+        .await?
+        .try_collect()
+        .await?;
+
+    tracing::warn!("Catty after sync: {:#?}", entries);
+
+    let caps: Vec<_> = catty.list_read_caps().await?;
+
+    tracing::warn!("Catty's caps: {:#?}", caps);
 
     Ok(())
 }

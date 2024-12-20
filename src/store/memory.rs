@@ -24,10 +24,10 @@ use super::{
 use crate::{
     interest::{CapSelector, CapabilityPack},
     proto::{
-        data_model::{AuthorisedEntry, Path, PathExt, SubspaceId, WriteCapability},
+        data_model::{AuthorisedEntry, Entry, Path, PathExt, SubspaceId, WriteCapability},
         grouping::{Area, Range3d},
         keys::{NamespaceId, NamespaceSecretKey, UserId, UserSecretKey},
-        meadowcap::{self, is_wider_than, ReadAuthorisation},
+        meadowcap::{self, is_wider_than, McCapability, ReadAuthorisation},
     },
     store::traits,
 };
@@ -98,6 +98,19 @@ impl traits::SecretStorage for Rc<RefCell<SecretStore>> {
         Ok(self.borrow().user.get(id).cloned())
     }
 
+    fn list_users(&self) -> Vec<UserId> {
+        self.borrow().user.iter().map(|(k, _)| k).cloned().collect()
+    }
+
+    fn list_namespaces(&self) -> Vec<NamespaceId> {
+        self.borrow()
+            .namespace
+            .iter()
+            .map(|(k, _)| k)
+            .cloned()
+            .collect()
+    }
+
     fn get_namespace(&self, id: &NamespaceId) -> Result<Option<NamespaceSecretKey>> {
         Ok(self.borrow().namespace.get(id).cloned())
     }
@@ -156,6 +169,20 @@ impl traits::EntryReader for Rc<RefCell<EntryStore>> {
 }
 
 impl EntryStore {
+    fn remove_entry(&mut self, entry: &Entry) -> Result<bool> {
+        let store = self.stores.entry(*entry.namespace_id()).or_default();
+        let entries = &mut store.entries;
+
+        let del_index =
+            entries
+                .iter()
+                .enumerate()
+                .find_map(|(i, el)| if el.entry() == entry { Some(i) } else { None });
+
+        let removed = del_index.map(|i| entries.remove(i));
+
+        Ok(removed.is_some())
+    }
     fn ingest_entry(&mut self, entry: &AuthorisedEntry, origin: EntryOrigin) -> Result<bool> {
         let store = self
             .stores
@@ -232,6 +259,12 @@ impl traits::EntryStorage for Rc<RefCell<EntryStore>> {
             })
             .collect();
         Ok(Rc::new(RefCell::new(EntryStore { stores })))
+    }
+
+    /// Removes the entry from the store.
+    fn remove_entry(&self, entry: &Entry) -> anyhow::Result<bool> {
+        let mut slf = self.borrow_mut();
+        Ok(slf.remove_entry(entry)?)
     }
 
     fn ingest_entry(&self, entry: &AuthorisedEntry, origin: EntryOrigin) -> Result<bool> {
@@ -401,6 +434,51 @@ pub struct CapsStore {
 }
 
 impl CapsStore {
+    fn del_caps(&mut self, selector: &CapSelector) -> Result<Vec<McCapability>> {
+        let mut deleted = vec![];
+
+        self.write_caps
+            .entry(selector.namespace_id)
+            .and_modify(|caps| {
+                let mut removed_indexes = caps
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, cap)| {
+                        if selector.is_covered_by(cap) {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                while let Some(i) = removed_indexes.pop() {
+                    deleted.push(caps.remove(i));
+                }
+            });
+
+        self.read_caps
+            .entry(selector.namespace_id)
+            .and_modify(|caps| {
+                let mut removed_indexes = caps
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, cap)| {
+                        if selector.is_covered_by(cap.read_cap()) {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                while let Some(i) = removed_indexes.pop() {
+                    deleted.push(caps.remove(i).read_cap().clone());
+                }
+            });
+
+        Ok(deleted)
+    }
     fn get_write_cap(&self, selector: &CapSelector) -> Result<Option<WriteCapability>> {
         let candidates = self
             .write_caps
@@ -507,6 +585,10 @@ impl traits::CapsStorage for Rc<RefCell<CapsStore>> {
 
     fn get_write_cap(&self, selector: &CapSelector) -> Result<Option<WriteCapability>> {
         self.borrow().get_write_cap(selector)
+    }
+
+    fn del_caps(&self, selector: &CapSelector) -> Result<Vec<McCapability>> {
+        self.borrow_mut().del_caps(selector)
     }
 
     fn get_read_cap(&self, selector: &CapSelector) -> Result<Option<ReadAuthorisation>> {

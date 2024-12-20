@@ -16,7 +16,7 @@ use crate::{
         },
         grouping::{Area, Range3d},
         keys::{NamespaceSecretKey, NamespaceSignature, UserId, UserSecretKey, UserSignature},
-        meadowcap::{self, ReadAuthorisation},
+        meadowcap::{self, McCapability, ReadAuthorisation},
         wgps::Fingerprint,
     },
 };
@@ -39,6 +39,8 @@ pub trait Storage: Debug + Clone + 'static {
 pub trait SecretStorage: Debug + Clone + 'static {
     fn insert(&self, secret: meadowcap::SecretKey) -> Result<(), SecretStoreError>;
     fn get_user(&self, id: &UserId) -> Result<Option<UserSecretKey>>;
+    fn list_users(&self) -> Vec<UserId>;
+    fn list_namespaces(&self) -> Vec<NamespaceId>;
     fn get_namespace(&self, id: &NamespaceId) -> Result<Option<NamespaceSecretKey>>;
 
     fn has_user(&self, id: &UserId) -> Result<bool> {
@@ -88,6 +90,9 @@ pub trait EntryStorage: EntryReader + Clone + Debug + 'static {
 
     fn reader(&self) -> Self::Reader;
     fn snapshot(&self) -> Result<Self::Snapshot>;
+
+    /// Out of protocol feature for special cases (e.g. capability revocation)
+    fn remove_entry(&self, entry: &Entry) -> Result<bool>;
 
     /// Ingest a new entry.
     ///
@@ -282,6 +287,7 @@ pub trait CapsStorage: Debug + Clone {
     ) -> Result<impl Iterator<Item = WriteCapability> + '_>;
 
     fn get_write_cap(&self, selector: &CapSelector) -> Result<Option<WriteCapability>>;
+    fn del_caps(&self, selector: &CapSelector) -> Result<Vec<McCapability>>;
 
     fn get_read_cap(&self, selector: &CapSelector) -> Result<Option<ReadAuthorisation>>;
 }

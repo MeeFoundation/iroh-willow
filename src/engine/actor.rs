@@ -15,10 +15,10 @@ use crate::{
     interest::{CapSelector, CapabilityPack, DelegateTo, InterestMap, Interests},
     net::ConnHandle,
     proto::{
-        data_model::{AuthorisedEntry, Path, SubspaceId},
+        data_model::{AuthorisedEntry, Entry, Path, SubspaceId},
         grouping::{Area, Range3d},
         keys::{NamespaceId, NamespaceKind, UserId, UserSecretKey},
-        meadowcap::{self, AccessMode},
+        meadowcap::{self, AccessMode, McCapability, ReadAuthorisation},
     },
     session::{intents::Intent, run_session, Error, EventSender, SessionHandle},
     store::{
@@ -103,6 +103,17 @@ impl ActorHandle {
         Ok((entry, inserted))
     }
 
+    /// Out of protocol feature for special cases (e.g. capability revocation)
+    pub async fn remove_entries(&self, entries: Vec<Entry>) -> Result<Vec<bool>> {
+        let (reply, reply_rx) = oneshot::channel();
+
+        self.send(Input::RemoveEntries { entries, reply }).await?;
+
+        let res = reply_rx.await??;
+
+        Ok(res)
+    }
+
     pub async fn insert_secret(&self, secret: impl Into<meadowcap::SecretKey>) -> Result<()> {
         let secret = secret.into();
         let (reply, reply_rx) = oneshot::channel();
@@ -174,6 +185,30 @@ impl ActorHandle {
     pub async fn create_user(&self) -> Result<UserId> {
         let (reply, reply_rx) = oneshot::channel();
         self.send(Input::CreateUser { reply }).await?;
+        reply_rx.await?
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<UserId>> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.send(Input::ListUsers { reply }).await?;
+        Ok(reply_rx.await?)
+    }
+
+    pub async fn list_namespaces(&self) -> Result<Vec<NamespaceId>> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.send(Input::ListNamespaces { reply }).await?;
+        Ok(reply_rx.await?)
+    }
+
+    pub async fn list_read_caps(&self) -> Result<Vec<ReadAuthorisation>> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.send(Input::ListReadCaps { reply }).await?;
+        reply_rx.await?
+    }
+
+    pub async fn del_caps(&self, selector: CapSelector) -> Result<Vec<McCapability>> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.send(Input::DeleteCaps { selector, reply }).await?;
         reply_rx.await?
     }
 
@@ -324,6 +359,23 @@ pub enum Input {
     },
     CreateUser {
         reply: oneshot::Sender<Result<UserId>>,
+    },
+    ListUsers {
+        reply: oneshot::Sender<Vec<UserId>>,
+    },
+    ListNamespaces {
+        reply: oneshot::Sender<Vec<NamespaceId>>,
+    },
+    ListReadCaps {
+        reply: oneshot::Sender<Result<Vec<ReadAuthorisation>>>,
+    },
+    DeleteCaps {
+        selector: CapSelector,
+        reply: oneshot::Sender<Result<Vec<McCapability>>>,
+    },
+    RemoveEntries {
+        entries: Vec<Entry>,
+        reply: oneshot::Sender<Result<Vec<bool>>>,
     },
     ImportCaps {
         caps: Vec<CapabilityPack>,
@@ -520,6 +572,31 @@ impl<S: Storage> Actor<S> {
             Input::CreateUser { reply } => {
                 let secret = UserSecretKey::generate(&mut rand::thread_rng());
                 let res = self.store.secrets().insert_user(secret);
+                send_reply(reply, res.map_err(anyhow::Error::from))
+            }
+            Input::ListUsers { reply } => {
+                let res = self.store.secrets().list_users();
+                send_reply(reply, res)
+            }
+            Input::ListNamespaces { reply } => {
+                let res = self.store.secrets().list_namespaces();
+                send_reply(reply, res)
+            }
+            Input::ListReadCaps { reply } => {
+                let res = self
+                    .store
+                    .auth()
+                    .list_read_caps()
+                    .map(|it| it.collect::<Vec<_>>());
+
+                send_reply(reply, res.map_err(anyhow::Error::from))
+            }
+            Input::DeleteCaps { selector, reply } => {
+                let res = self.store.auth().del_caps(&selector);
+                send_reply(reply, res.map_err(anyhow::Error::from))
+            }
+            Input::RemoveEntries { entries, reply } => {
+                let res = self.store.remove_entries(entries);
                 send_reply(reply, res.map_err(anyhow::Error::from))
             }
             Input::ImportCaps { caps, reply } => {

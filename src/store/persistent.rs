@@ -25,12 +25,12 @@ use crate::{
     interest::{CapSelector, CapabilityPack},
     proto::{
         data_model::{
-            AuthorisationToken, AuthorisedEntry, NamespaceId, Path, PathExt as _, SubspaceId,
-            WriteCapability,
+            AuthorisationToken, AuthorisedEntry, Entry, NamespaceId, Path, PathExt as _,
+            SubspaceId, WriteCapability,
         },
         grouping::{Area, Range3d},
         keys::{NamespaceSecretKey, UserId, UserSecretKey, UserSignature},
-        meadowcap,
+        meadowcap::{self, McCapability},
         wgps::Fingerprint,
     },
     store::willow_store_glue::{
@@ -393,6 +393,10 @@ impl traits::EntryStorage for Rc<WillowStore> {
         Ok(WillowSnapshot(Rc::new(self.db.snapshot_owned()?)))
     }
 
+    fn remove_entry(&self, entry: &Entry) -> Result<bool> {
+        todo!()
+    }
+
     fn ingest_entry(
         &self,
         entry: &crate::proto::data_model::AuthorisedEntry,
@@ -579,6 +583,14 @@ impl traits::SecretStorage for Rc<WillowStore> {
         Ok(user.map(|usr| UserSecretKey::from_bytes(&usr.value())))
     }
 
+    fn list_users(&self) -> Vec<UserId> {
+        todo!()
+    }
+
+    fn list_namespaces(&self) -> Vec<NamespaceId> {
+        todo!()
+    }
+
     fn get_namespace(&self, id: &NamespaceId) -> Result<Option<NamespaceSecretKey>> {
         let tables = self.db.tables()?;
         let namespace = tables.read().namespace_secrets.get(id.as_bytes())?;
@@ -644,6 +656,10 @@ impl traits::CapsStorage for Rc<WillowStore> {
         Ok(self
             .list_write_caps(Some(selector.namespace_id))?
             .find(|cap| selector.is_covered_by(cap)))
+    }
+
+    fn del_caps(&self, selector: &CapSelector) -> Result<Vec<McCapability>> {
+        todo!()
     }
 
     fn get_read_cap(&self, selector: &CapSelector) -> Result<Option<meadowcap::ReadAuthorisation>> {

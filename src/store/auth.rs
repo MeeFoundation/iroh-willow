@@ -44,6 +44,11 @@ impl<S: Storage> Auth<S> {
         Ok(cap)
     }
 
+    pub fn del_caps(&self, selector: &CapSelector) -> Result<Vec<McCapability>, AuthError> {
+        let cap = self.caps.del_caps(selector)?;
+        Ok(cap)
+    }
+
     pub fn get_read_cap(
         &self,
         selector: &CapSelector,
