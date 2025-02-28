@@ -5732,7 +5732,7 @@ dependencies = [
 [[package]]
 name = "willow-store"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/willow-store.git?branch=matheus23/redb-ref#3a29c592fe071ff87fa763bd4650bfed789a53e6"
+source = "git+https://github.com/n0-computer/willow-store.git?rev=6aff7688929c014f0ce58b3c4a6b2cc44cd074bf#6aff7688929c014f0ce58b3c4a6b2cc44cd074bf"
 dependencies = [
  "anyhow",
  "blake3",
