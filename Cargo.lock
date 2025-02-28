@@ -2122,7 +2122,7 @@ dependencies = [
 [[package]]
 name = "iroh-blobs"
 version = "0.28.1"
-source = "git+https://github.com/n0-computer/iroh-blobs?branch=matheus23/verified-streams#51f5707402f2a31a78a68fde40b480777e7d545a"
+source = "git+https://github.com/n0-computer/iroh-blobs?rev=f20b260ff326eadf6a581673e8624142ac01326e#f20b260ff326eadf6a581673e8624142ac01326e"
 dependencies = [
  "anyhow",
  "async-channel",
