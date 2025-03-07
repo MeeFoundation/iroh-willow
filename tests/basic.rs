@@ -4,7 +4,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures_concurrency::future::TryJoin;
 use futures_lite::StreamExt;
-use iroh::SecretKey;
+use iroh_base::SecretKey;
 use iroh_blobs::store::{Map, MapEntry};
 use iroh_io::AsyncSliceReaderExt;
 use iroh_willow::{
@@ -500,9 +500,9 @@ mod util {
 
     pub async fn spawn_three(rng: &mut impl CryptoRngCore) -> Result<[Peer; 3]> {
         let peers = [
-            iroh::key::SecretKey::generate_with_rng(rng),
-            iroh::key::SecretKey::generate_with_rng(rng),
-            iroh::key::SecretKey::generate_with_rng(rng),
+            iroh_base::SecretKey::generate(&mut *rng),
+            iroh_base::SecretKey::generate(&mut *rng),
+            iroh_base::SecretKey::generate(&mut *rng),
         ]
         .map(|secret_key| Peer::spawn(secret_key, Default::default()))
         .try_join()
