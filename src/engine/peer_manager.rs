@@ -671,6 +671,7 @@ struct Established {
 }
 
 #[derive(derive_more::Debug, strum::Display)]
+#[allow(clippy::large_enum_variant)]
 enum ConnStep {
     Established(anyhow::Result<Established>),
     Done(anyhow::Result<Connection>),

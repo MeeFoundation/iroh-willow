@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use genawaiter::rc::Co;
-use iroh_blobs::store::Store as PayloadStore;
+use iroh_blobs::api;
 use tracing::{debug, trace};
 
 use crate::{
@@ -174,7 +174,7 @@ impl<S: Storage> Reconciler<S> {
             ReconciliationMessage::SendPayload(message) => {
                 trace!("recv SendPayload");
                 self.entry_state
-                    .received_send_payload(self.shared.store.payloads(), message.bytes)
+                    .received_send_payload(self.shared.store.payload_store(), message.bytes)
                     .await?;
             }
             ReconciliationMessage::TerminatePayload(ReconciliationTerminatePayload {
@@ -183,7 +183,7 @@ impl<S: Storage> Reconciler<S> {
                 trace!(?is_final, "recv TerminatePayloade");
                 if let Some(completed_target) = self
                     .entry_state
-                    .received_terminate_payload(is_final)
+                    .received_terminate_payload(is_final, self.shared.store.payload_store())
                     .await?
                 {
                     let target = self
@@ -330,9 +330,9 @@ impl EntryState {
         Ok(())
     }
 
-    pub async fn received_send_payload<P: PayloadStore>(
+    pub async fn received_send_payload(
         &mut self,
-        store: &P,
+        store: &api::Store,
         bytes: Bytes,
     ) -> Result<(), Error> {
         self.get_mut()?
@@ -345,9 +345,10 @@ impl EntryState {
     pub async fn received_terminate_payload(
         &mut self,
         is_final: bool,
+        store: &api::Store,
     ) -> Result<Option<TargetId>, Error> {
         let state = self.get_mut()?;
-        state.current_payload.finalize().await?;
+        state.current_payload.finalize(store).await?;
         if is_final {
             let target_id = state.target;
             self.0 = None;
@@ -597,9 +598,13 @@ impl Target {
 
             // TODO: only send payload if configured to do so and/or under size limit.
             if payload_len <= shared.max_eager_payload_size {
-                send_payload_chunked(digest, shared.store.payloads(), &shared.send, 0, |bytes| {
-                    ReconciliationSendPayload { bytes }.into()
-                })
+                send_payload_chunked(
+                    digest,
+                    shared.store.payload_store(),
+                    &shared.send,
+                    0,
+                    |bytes| ReconciliationSendPayload { bytes }.into(),
+                )
                 .await?;
             }
             let is_final = iter.peek().is_none();

@@ -5,8 +5,6 @@ use bytes::Bytes;
 use futures_concurrency::future::TryJoin;
 use futures_lite::StreamExt;
 use iroh_base::SecretKey;
-use iroh_blobs::store::{Map, MapEntry};
-use iroh_io::AsyncSliceReaderExt;
 use iroh_willow::{
     form::EntryForm,
     interest::{
@@ -402,7 +400,7 @@ mod util {
 
     #[derive(Debug, Clone)]
     pub struct Peer {
-        pub blobs: iroh_blobs::store::mem::Store,
+        pub blobs: iroh_blobs::store::mem::MemStore,
         endpoint: Endpoint,
         engine: Engine,
         accept_task: Arc<Mutex<Option<JoinHandle<Result<()>>>>>,
@@ -416,7 +414,7 @@ mod util {
                 .alpns(vec![ALPN.to_vec()])
                 .bind()
                 .await?;
-            let blobs = iroh_blobs::store::mem::Store::default();
+            let blobs = iroh_blobs::store::mem::MemStore::default();
             let payloads = blobs.clone();
             let create_store = move || iroh_willow::store::memory::Store::new(payloads);
             let engine = Engine::spawn(endpoint.clone(), create_store, accept_opts);
@@ -487,13 +485,14 @@ mod util {
         .try_join()
         .await?;
 
+        use iroh::Watcher;
         peers[0]
             .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
 
         peers[1]
             .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
 
         Ok(peers)
     }
@@ -508,29 +507,30 @@ mod util {
         .try_join()
         .await?;
 
+        use iroh::Watcher;
         peers[0]
             .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
 
         peers[0]
             .endpoint
-            .add_node_addr(peers[2].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[2].endpoint.node_addr().initialized().await)?;
 
         peers[1]
             .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
 
         peers[1]
             .endpoint
-            .add_node_addr(peers[2].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[2].endpoint.node_addr().initialized().await)?;
 
         peers[2]
             .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
 
         peers[2]
             .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
 
         Ok(peers)
     }
@@ -641,8 +641,7 @@ async fn peer_manager_big_payload() -> Result<()> {
     assert_eq!(entries.len(), 1);
     let entry = &entries[0];
     let hash: iroh_blobs::Hash = (*entry.entry().payload_digest()).into();
-    let blob = alfie.blobs.get(&hash).await?.expect("missing blob");
-    let actual = blob.data_reader().await?.read_to_end().await?;
+    let actual = alfie.blobs.blobs().get_bytes(hash).await?;
     assert_eq!(actual.len(), payload.len());
     assert!(actual == payload);
 

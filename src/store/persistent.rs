@@ -42,13 +42,19 @@ mod tables;
 
 const MAX_COMMIT_DELAY: Duration = Duration::from_millis(500);
 
-#[derive(derive_more::Debug, Clone)]
-pub struct Store<PS: iroh_blobs::store::Store> {
+#[derive(Clone)]
+pub struct Store<PS: AsRef<iroh_blobs::api::Store> + Clone> {
     payloads: PS,
     willow: Rc<WillowStore>,
 }
 
-impl<PS: iroh_blobs::store::Store> Store<PS> {
+impl<PS: AsRef<iroh_blobs::api::Store> + Clone> std::fmt::Debug for Store<PS> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store").finish()
+    }
+}
+
+impl<PS: AsRef<iroh_blobs::api::Store> + Clone> Store<PS> {
     pub fn new(db_path: PathBuf, payload_store: PS) -> Result<Self> {
         Ok(Self {
             payloads: payload_store,
@@ -207,7 +213,7 @@ impl Db {
     }
 }
 
-impl<PS: iroh_blobs::store::Store> traits::Storage for Store<PS> {
+impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> traits::Storage for Store<PS> {
     type Entries = Rc<WillowStore>;
     type Secrets = Rc<WillowStore>;
     type Payloads = PS;
@@ -393,7 +399,7 @@ impl traits::EntryStorage for Rc<WillowStore> {
         Ok(WillowSnapshot(Rc::new(self.db.snapshot_owned()?)))
     }
 
-    fn remove_entry(&self, entry: &Entry) -> Result<bool> {
+    fn remove_entry(&self, _entry: &Entry) -> Result<bool> {
         todo!()
     }
 
@@ -658,7 +664,7 @@ impl traits::CapsStorage for Rc<WillowStore> {
             .find(|cap| selector.is_covered_by(cap)))
     }
 
-    fn del_caps(&self, selector: &CapSelector) -> Result<Vec<McCapability>> {
+    fn del_caps(&self, _selector: &CapSelector) -> Result<Vec<McCapability>> {
         todo!()
     }
 

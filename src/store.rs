@@ -4,6 +4,7 @@
 //!
 //! The only implementation is currently an in-memory store at [`memory`].
 
+use crate::store::traits::BlobStoreHandle;
 use anyhow::{anyhow, Context, Result};
 use rand_core::CryptoRngCore;
 use traits::EntryStorage;
@@ -56,12 +57,17 @@ impl<S: Storage> Store<S> {
         self.storage.secrets()
     }
 
+    #[allow(dead_code)]
     pub fn payloads(&self) -> &S::Payloads {
         self.storage.payloads()
     }
 
     pub fn auth(&self) -> &Auth<S> {
         &self.auth
+    }
+
+    pub fn payload_store(&self) -> &iroh_blobs::api::Store {
+        self.storage.payloads().api()
     }
 
     pub async fn insert_entry(
@@ -131,7 +137,7 @@ impl<S: Storage> Store<S> {
             SubspaceForm::User => user_id,
             SubspaceForm::Exact(subspace) => subspace,
         };
-        let (payload_digest, payload_length) = form.payload.submit(self.payloads()).await?;
+        let (payload_digest, payload_length) = form.payload.submit(self.payload_store()).await?;
         let entry = Entry::new(
             form.namespace_id,
             subspace_id,

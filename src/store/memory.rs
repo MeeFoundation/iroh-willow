@@ -32,7 +32,7 @@ use crate::{
     store::traits,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct Store<PS> {
     secrets: Rc<RefCell<SecretStore>>,
     entries: Rc<RefCell<EntryStore>>,
@@ -40,7 +40,13 @@ pub struct Store<PS> {
     caps: Rc<RefCell<CapsStore>>,
 }
 
-impl<PS: iroh_blobs::store::Store> Store<PS> {
+impl<PS> std::fmt::Debug for Store<PS> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store").finish()
+    }
+}
+
+impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> Store<PS> {
     pub fn new(payloads: PS) -> Self {
         Self {
             payloads,
@@ -51,7 +57,7 @@ impl<PS: iroh_blobs::store::Store> Store<PS> {
     }
 }
 
-impl<PS: iroh_blobs::store::Store> traits::Storage for Store<PS> {
+impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> traits::Storage for Store<PS> {
     type Entries = Rc<RefCell<EntryStore>>;
     type Secrets = Rc<RefCell<SecretStore>>;
     type Payloads = PS;

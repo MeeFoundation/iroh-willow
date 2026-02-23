@@ -245,14 +245,16 @@ impl<C: quic_rpc::Connector<RpcService>> Space<C> {
     /// Inserts a new entry, with the payload imported from a byte string.
     pub async fn insert_bytes(
         &self,
-        blobs: &impl iroh_blobs::store::Store,
+        blobs: &iroh_blobs::api::Store,
         entry: EntryForm,
         payload: impl Into<Bytes>,
     ) -> Result<InsertEntrySuccess> {
-        let tag = blobs
-            .import_bytes(payload.into(), iroh_blobs::BlobFormat::Raw)
+        let tag_info = blobs
+            .blobs()
+            .add_bytes_with_opts((payload.into(), iroh_blobs::BlobFormat::Raw))
+            .with_tag()
             .await?;
-        self.insert_hash(entry, *tag.hash()).await
+        self.insert_hash(entry, tag_info.hash).await
     }
 
     // TODO(matheus23): figure out how to use blobs

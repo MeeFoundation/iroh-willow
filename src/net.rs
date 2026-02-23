@@ -416,7 +416,7 @@ mod tests {
 
     use anyhow::Result;
     use futures_lite::StreamExt;
-    use iroh::{endpoint::Connection, Endpoint, NodeAddr, NodeId, SecretKey};
+    use iroh::{endpoint::Connection, Endpoint, NodeAddr, NodeId, SecretKey, Watcher};
     use rand::SeedableRng;
     use rand_chacha::ChaCha12Rng;
     use tracing::{info, Instrument};
@@ -787,7 +787,7 @@ mod tests {
             .alpns(vec![ALPN.to_vec()])
             .bind()
             .await?;
-        let addr = ep.node_addr().await?;
+        let addr = ep.node_addr().initialized().await;
         let node_id = ep.node_id();
         Ok((ep, node_id, addr))
     }

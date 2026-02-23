@@ -3,7 +3,6 @@
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
-use futures_lite::future::Boxed;
 use futures_util::{
     future::{MapErr, Shared},
     FutureExt, TryFutureExt,
@@ -170,16 +169,23 @@ impl std::ops::Deref for Engine {
 }
 
 impl ProtocolHandler for Engine {
-    fn accept(&self, conn: Connection) -> Boxed<Result<()>> {
+    fn accept(
+        &self,
+        conn: Connection,
+    ) -> impl std::future::Future<Output = Result<(), iroh::protocol::AcceptError>> + Send {
         let this = self.clone();
-        async move { this.handle_connection(conn).await }.boxed()
+        async move {
+            match this.handle_connection(conn).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(iroh::protocol::AcceptError::User { source: e.into() }),
+            }
+        }
     }
 
-    fn shutdown(&self) -> Boxed<()> {
+    fn shutdown(&self) -> impl std::future::Future<Output = ()> + Send {
         let this = self.clone();
         async move {
             crate::engine::Engine::shutdown(&this).await.ok();
         }
-        .boxed()
     }
 }

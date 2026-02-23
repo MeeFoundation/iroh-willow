@@ -42,7 +42,7 @@ pub struct ActorHandle {
 }
 
 impl ActorHandle {
-    pub fn spawn_memory(payloads: iroh_blobs::store::mem::Store, me: NodeId) -> Self {
+    pub fn spawn_memory(payloads: iroh_blobs::store::mem::MemStore, me: NodeId) -> Self {
         Self::spawn(move || crate::store::memory::Store::new(payloads), me)
     }
 
@@ -589,7 +589,7 @@ impl<S: Storage> Actor<S> {
                     .list_read_caps()
                     .map(|it| it.collect::<Vec<_>>());
 
-                send_reply(reply, res.map_err(anyhow::Error::from))
+                send_reply(reply, res)
             }
             Input::DeleteCaps { selector, reply } => {
                 let res = self.store.auth().del_caps(&selector);
@@ -597,7 +597,7 @@ impl<S: Storage> Actor<S> {
             }
             Input::RemoveEntries { entries, reply } => {
                 let res = self.store.remove_entries(entries);
-                send_reply(reply, res.map_err(anyhow::Error::from))
+                send_reply(reply, res)
             }
             Input::ImportCaps { caps, reply } => {
                 let res = self.store.auth().import_caps(caps);

@@ -98,7 +98,7 @@ mod util {
     use anyhow::Result;
     use bytes::Bytes;
     use futures_concurrency::future::TryJoin;
-    use iroh::{Endpoint, NodeId};
+    use iroh::{Endpoint, NodeId, Watcher};
     use iroh_willow::{
         engine::{AcceptOpts, Engine},
         form::EntryForm,
@@ -135,7 +135,7 @@ mod util {
                 .alpns(vec![ALPN.to_vec()])
                 .bind()
                 .await?;
-            let blobs = iroh_blobs::store::mem::Store::default();
+            let blobs = iroh_blobs::store::mem::MemStore::default();
             let create_store = move || iroh_willow::store::memory::Store::new(blobs);
             let engine = Engine::spawn(endpoint.clone(), create_store, accept_opts);
             let accept_task = tokio::task::spawn({
@@ -206,11 +206,11 @@ mod util {
 
         peers[0]
             .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
 
         peers[1]
             .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().await?)?;
+            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
 
         Ok(peers)
     }

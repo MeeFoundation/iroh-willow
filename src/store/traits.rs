@@ -27,12 +27,29 @@ use crate::{
 pub trait Storage: Debug + Clone + 'static {
     type Entries: EntryStorage;
     type Secrets: SecretStorage;
-    type Payloads: iroh_blobs::store::Store;
+    type Payloads: BlobStoreHandle;
     type Caps: CapsStorage;
     fn entries(&self) -> &Self::Entries;
     fn secrets(&self) -> &Self::Secrets;
     fn payloads(&self) -> &Self::Payloads;
     fn caps(&self) -> &Self::Caps;
+
+    fn payloads_api(&self) -> &iroh_blobs::api::Store {
+        self.payloads().api()
+    }
+}
+
+pub trait BlobStoreHandle: Clone + 'static {
+    fn api(&self) -> &iroh_blobs::api::Store;
+}
+
+impl<T> BlobStoreHandle for T
+where
+    T: AsRef<iroh_blobs::api::Store> + Clone + 'static,
+{
+    fn api(&self) -> &iroh_blobs::api::Store {
+        self.as_ref()
+    }
 }
 
 /// Storage for user and namespace secrets.
@@ -295,6 +312,7 @@ pub trait CapsStorage: Debug + Clone {
 /// An event which took place within a [`EntryStorage`].
 /// Each event includes a *progress ID* which can be used to *resume* a subscription at any point in the future.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum StoreEvent {
     /// A new entry was ingested.
     Ingested(

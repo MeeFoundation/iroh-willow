@@ -107,9 +107,13 @@ impl<S: Storage> DataSender<S> {
         // TODO: only send payload if configured to do so and/or under size limit.
         let send_payloads = true;
         if send_payloads {
-            send_payload_chunked(digest, self.store.payloads(), &self.send, offset, |bytes| {
-                DataSendPayload { bytes }.into()
-            })
+            send_payload_chunked(
+                digest,
+                self.store.payload_store(),
+                &self.send,
+                offset,
+                |bytes| DataSendPayload { bytes }.into(),
+            )
             .await?;
         }
         Ok(())
@@ -169,10 +173,12 @@ impl<S: Storage> DataReceiver<S> {
 
     async fn on_send_payload(&mut self, message: DataSendPayload) -> Result<(), Error> {
         self.current_payload
-            .recv_chunk(self.store.payloads(), message.bytes)
+            .recv_chunk(self.store.payload_store(), message.bytes)
             .await?;
         if self.current_payload.is_complete() {
-            self.current_payload.finalize().await?;
+            self.current_payload
+                .finalize(self.store.payload_store())
+                .await?;
         }
         Ok(())
     }

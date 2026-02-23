@@ -2,8 +2,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::ensure;
 use futures_lite::StreamExt;
-use iroh::{Endpoint, NodeAddr, SecretKey};
-use iroh_io::AsyncSliceReaderExt;
+use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
 use iroh_willow::{
     engine::AcceptOpts,
     interest::{AreaOfInterestSelector, CapSelector, DelegateTo, RestrictArea},
@@ -30,10 +29,10 @@ async fn spawn_node(
 ) -> (
     NodeAddr,
     Client,
-    iroh_blobs::store::mem::Store,
+    iroh_blobs::store::mem::MemStore,
     iroh::protocol::Router,
 ) {
-    let blobs_store = iroh_blobs::store::mem::Store::default();
+    let blobs_store = iroh_blobs::store::mem::MemStore::default();
 
     let secret_key = SecretKey::generate(rand::rngs::OsRng);
     let endpoint = Endpoint::builder()
@@ -66,13 +65,11 @@ async fn spawn_node(
 
     // wait for direct addresses
     // endpoint.direct_addresses().next().await;
-    let addr = endpoint.node_addr().await.unwrap();
+    let addr = endpoint.node_addr().initialized().await;
 
     let router = iroh::protocol::Router::builder(endpoint.clone())
         .accept(iroh_willow::ALPN, Arc::new(engine.clone()))
-        .spawn()
-        .await
-        .unwrap();
+        .spawn();
 
     (addr, client, blobs_store, router)
 }
@@ -237,7 +234,7 @@ fn prop_sync_simulation_matches_model(
 
 async fn space_to_map(
     space: &Space,
-    blobs: &impl iroh_blobs::store::Store,
+    blobs: &iroh_blobs::api::Store,
     user_x: UserId,
     user_y: UserId,
 ) -> anyhow::Result<BTreeMap<(Peer, String), String>> {
@@ -256,13 +253,7 @@ async fn space_to_map(
             .ok_or_else(|| anyhow::anyhow!("path component missing"))?;
         let key = String::from_utf8(key_component.to_vec())?;
 
-        use iroh_blobs::store::*;
-        let entry = blobs
-            .get(&entry.payload_digest().0)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("blob missing"))?;
-        let mut reader = entry.data_reader().await?;
-        let value = reader.read_to_end().await?;
+        let value = blobs.blobs().get_bytes(entry.payload_digest().0).await?;
 
         let user = auth.capability.receiver();
         let peer = role_lookup

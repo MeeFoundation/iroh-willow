@@ -72,6 +72,7 @@ pub enum Request {
 }
 
 #[allow(missing_docs)]
+#[allow(clippy::large_enum_variant)]
 #[derive(strum::Display, Debug, Serialize, Deserialize)]
 #[enum_conversions]
 pub enum Response {
@@ -105,6 +106,7 @@ pub struct InsertEntryRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum InsertEntrySuccess {
     Inserted(#[serde(with = "data_model::serde_encoding::authorised_entry")] AuthorisedEntry),
     Obsolete,

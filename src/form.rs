@@ -4,12 +4,9 @@
 use std::{io, path::PathBuf};
 
 use bytes::Bytes;
-use futures_lite::Stream;
-use iroh_blobs::{
-    store::{ImportMode, MapEntry},
-    util::progress::IgnoreProgressSender,
-    BlobFormat, Hash,
-};
+use futures_lite::{Stream, StreamExt};
+use iroh_blobs::api::blobs::ImportMode;
+use iroh_blobs::{api, BlobFormat, Hash};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncRead;
 
@@ -42,42 +39,105 @@ pub enum PayloadForm {
 }
 
 impl PayloadForm {
-    pub async fn submit<S: iroh_blobs::store::Store>(
-        self,
-        store: &S,
-    ) -> anyhow::Result<(Hash, u64)> {
+    pub async fn submit(self, store: &api::Store) -> anyhow::Result<(Hash, u64)> {
         let (hash, len) = match self {
             PayloadForm::Hash(digest) => {
-                let entry = store.get(&digest).await?;
-                let entry = entry.ok_or_else(|| anyhow::anyhow!("hash not foundA"))?;
-                (digest, entry.size().value())
+                // Query blob status to retrieve size
+                match store.blobs().status(digest).await? {
+                    iroh_blobs::api::blobs::BlobStatus::Complete { size } => (digest, size),
+                    iroh_blobs::api::blobs::BlobStatus::Partial { .. } => {
+                        anyhow::bail!("hash found but not complete")
+                    }
+                    iroh_blobs::api::blobs::BlobStatus::NotFound => {
+                        anyhow::bail!("hash not found")
+                    }
+                }
             }
             PayloadForm::HashUnchecked(digest, len) => (digest, len),
             PayloadForm::Bytes(bytes) => {
                 let len = bytes.len();
-                let temp_tag = store.import_bytes(bytes, BlobFormat::Raw).await?;
-                (*temp_tag.hash(), len as u64)
+                let tag_info = store
+                    .blobs()
+                    .add_bytes_with_opts((bytes, BlobFormat::Raw))
+                    .with_tag()
+                    .await?;
+                (tag_info.hash, len as u64)
             }
             PayloadForm::File(path, mode) => {
-                let progress = IgnoreProgressSender::default();
-                let (temp_tag, len) = store
-                    .import_file(path, mode, BlobFormat::Raw, progress)
-                    .await?;
-                (*temp_tag.hash(), len)
+                let mut size: Option<u64> = None;
+                let mut stream = store
+                    .blobs()
+                    .add_path_with_opts(api::blobs::AddPathOptions {
+                        path,
+                        mode,
+                        format: BlobFormat::Raw,
+                    })
+                    .stream()
+                    .await;
+                let mut hash: Option<Hash> = None;
+                while let Some(item) = stream.next().await {
+                    use iroh_blobs::api::blobs::AddProgressItem as I;
+                    match item {
+                        I::Size(s) => size = Some(s),
+                        I::Done(tt) => {
+                            hash = Some(*tt.hash());
+                            break;
+                        }
+                        I::Error(e) => return Err(e.into()),
+                        _ => {}
+                    }
+                }
+                let hash = hash.ok_or_else(|| anyhow::anyhow!("import did not complete"))?;
+                let len = size.ok_or_else(|| anyhow::anyhow!("size not reported"))?;
+                (hash, len)
             }
             PayloadForm::Stream(stream) => {
-                let progress = IgnoreProgressSender::default();
-                let (temp_tag, len) = store
-                    .import_stream(stream, BlobFormat::Raw, progress)
-                    .await?;
-                (*temp_tag.hash(), len)
+                let mut size: Option<u64> = None;
+                let mut stream = store.blobs().add_stream(stream).await.stream().await;
+                let mut hash: Option<Hash> = None;
+                while let Some(item) = stream.next().await {
+                    use iroh_blobs::api::blobs::AddProgressItem as I;
+                    match item {
+                        I::Size(s) => size = Some(s),
+                        I::Done(tt) => {
+                            hash = Some(*tt.hash());
+                            break;
+                        }
+                        I::Error(e) => return Err(e.into()),
+                        _ => {}
+                    }
+                }
+                let hash = hash.ok_or_else(|| anyhow::anyhow!("import did not complete"))?;
+                let len = size.ok_or_else(|| anyhow::anyhow!("size not reported"))?;
+                (hash, len)
             }
             PayloadForm::Reader(reader) => {
-                let progress = IgnoreProgressSender::default();
-                let (temp_tag, len) = store
-                    .import_reader(reader, BlobFormat::Raw, progress)
-                    .await?;
-                (*temp_tag.hash(), len)
+                // Convert reader into a stream of Bytes and reuse the stream path
+                use tokio_util::io::ReaderStream;
+                let bytes_stream = ReaderStream::new(reader);
+                let mut size: Option<u64> = None;
+                let mut stream = store
+                    .blobs()
+                    .add_stream(Box::pin(bytes_stream))
+                    .await
+                    .stream()
+                    .await;
+                let mut hash: Option<Hash> = None;
+                while let Some(item) = stream.next().await {
+                    use iroh_blobs::api::blobs::AddProgressItem as I;
+                    match item {
+                        I::Size(s) => size = Some(s),
+                        I::Done(tt) => {
+                            hash = Some(*tt.hash());
+                            break;
+                        }
+                        I::Error(e) => return Err(e.into()),
+                        _ => {}
+                    }
+                }
+                let hash = hash.ok_or_else(|| anyhow::anyhow!("import did not complete"))?;
+                let len = size.ok_or_else(|| anyhow::anyhow!("size not reported"))?;
+                (hash, len)
             }
         };
         Ok((hash, len))
