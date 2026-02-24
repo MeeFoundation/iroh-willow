@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::ensure;
 use futures_lite::StreamExt;
-use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
+use iroh::{address_lookup::memory::MemoryLookup, Endpoint, EndpointAddr, SecretKey};
 use iroh_willow::{
     engine::AcceptOpts,
     interest::{AreaOfInterestSelector, CapSelector, DelegateTo, RestrictArea},
@@ -26,19 +26,23 @@ use tracing::{error, info};
 /// the address and client.
 async fn spawn_node(
     persist_test_mode: bool,
+    lookup: MemoryLookup,
 ) -> (
-    NodeAddr,
+    EndpointAddr,
     Client,
     iroh_blobs::store::mem::MemStore,
     iroh::protocol::Router,
 ) {
     let blobs_store = iroh_blobs::store::mem::MemStore::default();
 
-    let secret_key = SecretKey::generate(rand::rngs::OsRng);
-    let endpoint = Endpoint::builder()
+    let secret_key = SecretKey::from(rand::random::<[u8; 32]>());
+    let endpoint = Endpoint::empty_builder(iroh::RelayMode::Disabled)
         .secret_key(secret_key)
         .alpns(vec![iroh_willow::ALPN.to_vec()])
-        .relay_mode(iroh::RelayMode::Disabled)
+        .address_lookup(lookup)
+        .clear_ip_transports()
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0u16))
+        .unwrap()
         .bind()
         .await
         .unwrap();
@@ -63,9 +67,7 @@ async fn spawn_node(
 
     let client = engine.client().clone().boxed();
 
-    // wait for direct addresses
-    // endpoint.direct_addresses().next().await;
-    let addr = endpoint.node_addr().initialized().await;
+    let addr = endpoint.addr();
 
     let router = iroh::protocol::Router::builder(endpoint.clone())
         .accept(iroh_willow::ALPN, Arc::new(engine.clone()))
@@ -117,12 +119,15 @@ fn prop_sync_simulation_matches_model(
         .block_on(async {
             let mut simulated_entries: BTreeMap<(Peer, String), String> = BTreeMap::new();
 
-            let (addr_x, iroh_x, blobs_x, _guard_x) = spawn_node(x_is_persist).await;
-            let (addr_y, iroh_y, blobs_y, _guard_y) = spawn_node(y_is_persist).await;
-            let node_id_x = addr_x.node_id;
-            let node_id_y = addr_y.node_id;
-            iroh_x.add_node_addr(addr_y.clone()).await?;
-            iroh_y.add_node_addr(addr_x.clone()).await?;
+            let lookup = MemoryLookup::new();
+            let (addr_x, iroh_x, blobs_x, _guard_x) =
+                spawn_node(x_is_persist, lookup.clone()).await;
+            let (addr_y, iroh_y, blobs_y, _guard_y) =
+                spawn_node(y_is_persist, lookup.clone()).await;
+            lookup.add_endpoint_info(addr_x.clone());
+            lookup.add_endpoint_info(addr_y.clone());
+            let node_id_x = addr_x.id;
+            let node_id_y = addr_y.id;
             let user_x = iroh_x.create_user().await?;
             let user_y = iroh_y.create_user().await?;
             info!(
@@ -292,10 +297,13 @@ impl std::error::Error for AnyhowStdErr {
 #[tokio::test]
 async fn spaces_smoke() -> TestResult {
     iroh_test::logging::setup_multithreaded();
-    let (alfie_addr, alfie, alfie_blobs, _g1) = spawn_node(false).await;
-    let (betty_addr, betty, betty_blobs, _g2) = spawn_node(false).await;
-    info!("alfie is {}", alfie_addr.node_id.fmt_short());
-    info!("betty is {}", betty_addr.node_id.fmt_short());
+    let lookup = MemoryLookup::new();
+    let (alfie_addr, alfie, alfie_blobs, _g1) = spawn_node(false, lookup.clone()).await;
+    let (betty_addr, betty, betty_blobs, _g2) = spawn_node(false, lookup.clone()).await;
+    lookup.add_endpoint_info(alfie_addr.clone());
+    lookup.add_endpoint_info(betty_addr.clone());
+    info!("alfie is {}", alfie_addr.id.fmt_short());
+    info!("betty is {}", betty_addr.id.fmt_short());
 
     let betty_user = betty.create_user().await?;
     let alfie_user = alfie.create_user().await?;
@@ -329,7 +337,7 @@ async fn spaces_smoke() -> TestResult {
 
     let mut completion = betty_sync_intent.complete_all().await;
     assert_eq!(completion.len(), 1);
-    let alfie_completion = completion.remove(&alfie_addr.node_id).unwrap();
+    let alfie_completion = completion.remove(&alfie_addr.id).unwrap();
     assert_eq!(alfie_completion?, Completion::Complete);
 
     let betty_entries: Vec<_> = betty_space
@@ -368,9 +376,8 @@ async fn spaces_smoke() -> TestResult {
         .await;
     assert!(res.is_ok());
 
-    alfie.add_node_addr(betty_addr.clone()).await?;
     let mut alfie_sync_intent = alfie_space
-        .sync_once(betty_addr.node_id, Default::default())
+        .sync_once(betty_addr.id, Default::default())
         .await?;
     alfie_sync_intent.complete().await?;
 
@@ -387,10 +394,13 @@ async fn spaces_smoke() -> TestResult {
 #[tokio::test]
 async fn spaces_subscription() -> TestResult {
     iroh_test::logging::setup_multithreaded();
-    let (alfie_addr, alfie, alfie_blobs, _g1) = spawn_node(false).await;
-    let (betty_addr, betty, betty_blobs, _g2) = spawn_node(false).await;
-    info!("alfie is {}", alfie_addr.node_id.fmt_short());
-    info!("betty is {}", betty_addr.node_id.fmt_short());
+    let lookup = MemoryLookup::new();
+    let (alfie_addr, alfie, alfie_blobs, _g1) = spawn_node(false, lookup.clone()).await;
+    let (betty_addr, betty, betty_blobs, _g2) = spawn_node(false, lookup.clone()).await;
+    lookup.add_endpoint_info(alfie_addr.clone());
+    lookup.add_endpoint_info(betty_addr.clone());
+    info!("alfie is {}", alfie_addr.id.fmt_short());
+    info!("betty is {}", betty_addr.id.fmt_short());
 
     let betty_user = betty.create_user().await?;
     let alfie_user = alfie.create_user().await?;
@@ -471,10 +481,13 @@ async fn spaces_subscription() -> TestResult {
 async fn test_restricted_area() -> testresult::TestResult {
     iroh_test::logging::setup_multithreaded();
     const TIMEOUT: Duration = Duration::from_secs(20);
-    let (alfie_addr, alfie, _, _g1) = spawn_node(false).await;
-    let (betty_addr, betty, _, _g2) = spawn_node(false).await;
-    info!("alfie is {}", alfie_addr.node_id.fmt_short());
-    info!("betty is {}", betty_addr.node_id.fmt_short());
+    let lookup = MemoryLookup::new();
+    let (alfie_addr, alfie, _, _g1) = spawn_node(false, lookup.clone()).await;
+    let (betty_addr, betty, _, _g2) = spawn_node(false, lookup.clone()).await;
+    lookup.add_endpoint_info(alfie_addr.clone());
+    lookup.add_endpoint_info(betty_addr.clone());
+    info!("alfie is {}", alfie_addr.id.fmt_short());
+    info!("betty is {}", betty_addr.id.fmt_short());
     let alfie_user = alfie.create_user().await?;
     let betty_user = betty.create_user().await?;
     let alfie_space = alfie.create(NamespaceKind::Owned, alfie_user).await?;

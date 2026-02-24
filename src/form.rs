@@ -80,7 +80,7 @@ impl PayloadForm {
                     match item {
                         I::Size(s) => size = Some(s),
                         I::Done(tt) => {
-                            hash = Some(*tt.hash());
+                            hash = Some(tt.hash());
                             break;
                         }
                         I::Error(e) => return Err(e.into()),
@@ -100,7 +100,7 @@ impl PayloadForm {
                     match item {
                         I::Size(s) => size = Some(s),
                         I::Done(tt) => {
-                            hash = Some(*tt.hash());
+                            hash = Some(tt.hash());
                             break;
                         }
                         I::Error(e) => return Err(e.into()),
@@ -128,7 +128,7 @@ impl PayloadForm {
                     match item {
                         I::Size(s) => size = Some(s),
                         I::Done(tt) => {
-                            hash = Some(*tt.hash());
+                            hash = Some(tt.hash());
                             break;
                         }
                         I::Error(e) => return Err(e.into()),

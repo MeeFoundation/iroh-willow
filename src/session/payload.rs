@@ -1,6 +1,6 @@
+use bao_tree::{ChunkNum, ChunkRanges};
 use bytes::Bytes;
 use futures_lite::StreamExt;
-use bao_tree::{ChunkNum, ChunkRanges};
 use iroh_blobs::{api, Hash};
 
 use super::Error;

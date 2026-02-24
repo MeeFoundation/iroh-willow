@@ -6,7 +6,7 @@ use futures_lite::{future::Boxed, StreamExt};
 use futures_util::{FutureExt, TryFutureExt};
 use iroh::{
     endpoint::{Connection, ConnectionError},
-    Endpoint, NodeId,
+    Endpoint, EndpointId,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -48,13 +48,13 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct AcceptOpts {
     #[debug("{:?}", accept_cb.as_ref().map(|_| "_"))]
     accept_cb: Option<AcceptCb>,
-    track_events: Option<mpsc::Sender<(NodeId, EventKind)>>,
+    track_events: Option<mpsc::Sender<(EndpointId, EventKind)>>,
 }
 
 impl AcceptOpts {
     /// Registers a callback to determine the fate of incoming connections.
     ///
-    /// The callback gets the connecting peer's [`NodeId`] as argument, and must return a future
+    /// The callback gets the connecting peer's [`EndpointId`] as argument, and must return a future
     /// that resolves to `None` or Some(`[SessionInit]`).
     /// When returning `None`, the session will not be  accepted.
     /// When returning a `SessionInit`, the session will be accepted with these interests.
@@ -63,10 +63,10 @@ impl AcceptOpts {
     /// interests in everything we have and in live session mode.
     pub fn accept_custom<F, Fut>(mut self, cb: F) -> Self
     where
-        F: Fn(NodeId) -> Fut + Send + Sync + 'static,
+        F: Fn(EndpointId) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Option<SessionInit>> + Send + 'static,
     {
-        let cb = Box::new(move |peer: NodeId| {
+        let cb = Box::new(move |peer: EndpointId| {
             let fut: Boxed<Option<SessionInit>> = Box::pin((cb)(peer));
             fut
         });
@@ -82,7 +82,7 @@ impl AcceptOpts {
     /// able to process events fast enough.
     ///
     /// If not called, events from session intents for incoming connections will be dropped.
-    pub fn track_events(mut self, sender: mpsc::Sender<(NodeId, EventKind)>) -> Self {
+    pub fn track_events(mut self, sender: mpsc::Sender<(EndpointId, EventKind)>) -> Self {
         self.track_events = Some(sender);
         self
     }
@@ -92,7 +92,7 @@ impl AcceptOpts {
 #[derive(derive_more::Debug)]
 pub(super) enum Input {
     SubmitIntent {
-        peer: NodeId,
+        peer: EndpointId,
         intent: Intent,
     },
     HandleConnection {
@@ -104,7 +104,7 @@ pub(super) enum Input {
     },
 }
 
-type AcceptCb = Box<dyn Fn(NodeId) -> Boxed<Option<SessionInit>> + Send + Sync + 'static>;
+type AcceptCb = Box<dyn Fn(EndpointId) -> Boxed<Option<SessionInit>> + Send + Sync + 'static>;
 
 /// Manages incoming and outgoing connections.
 #[derive(Debug)]
@@ -112,10 +112,10 @@ pub(super) struct PeerManager {
     actor: ActorHandle,
     endpoint: Endpoint,
     inbox: mpsc::Receiver<Input>,
-    session_events_rx: StreamMap<NodeId, ReceiverStream<SessionEvent>>,
-    peers: HashMap<NodeId, PeerInfo>,
+    session_events_rx: StreamMap<EndpointId, ReceiverStream<SessionEvent>>,
+    peers: HashMap<EndpointId, PeerInfo>,
     accept_handlers: AcceptHandlers,
-    conn_tasks: JoinSet<(NodeId, ConnStep)>,
+    conn_tasks: JoinSet<(EndpointId, ConnStep)>,
     shutting_down: bool,
 }
 
@@ -201,13 +201,7 @@ impl PeerManager {
 
     /// Handle a new incoming connection.
     async fn handle_connection(&mut self, conn: Connection) {
-        let peer = match conn.remote_node_id() {
-            Ok(peer) => peer,
-            Err(err) => {
-                debug!("ignore incoming connection (failed to get remote node id: {err})");
-                return;
-            }
-        };
+        let peer = conn.remote_id();
 
         let Some(intent) = self.accept_handlers.accept(peer).await else {
             debug!("ignore incoming connection (accept handler returned none)");
@@ -233,7 +227,7 @@ impl PeerManager {
                 }
                 // We are dialing also: abort one of the conns
                 Some(cancel_dial) => {
-                    if peer > self.endpoint.node_id() {
+                    if peer > self.endpoint.id() {
                         debug!("incoming connection for a peer we are dialing and their connection wins, abort dial");
                         cancel_dial.cancel();
                         true
@@ -275,7 +269,7 @@ impl PeerManager {
         }
     }
 
-    async fn submit_intent(&mut self, peer: NodeId, intent: Intent) {
+    async fn submit_intent(&mut self, peer: EndpointId, intent: Intent) {
         let peer_info = self
             .peers
             .entry(peer)
@@ -287,7 +281,7 @@ impl PeerManager {
         }
     }
 
-    fn connect_if_inactive(&mut self, peer: NodeId) {
+    fn connect_if_inactive(&mut self, peer: EndpointId) {
         let peer_info = self
             .peers
             .entry(peer)
@@ -332,7 +326,7 @@ impl PeerManager {
     }
 
     #[instrument("conn", skip_all, fields(peer=%peer.fmt_short()))]
-    fn handle_session_event(&mut self, peer: NodeId, event: SessionEvent) {
+    fn handle_session_event(&mut self, peer: EndpointId, event: SessionEvent) {
         match event {
             SessionEvent::Established => {}
             SessionEvent::Complete {
@@ -366,7 +360,7 @@ impl PeerManager {
     }
 
     #[instrument("conn", skip_all, fields(peer=%peer.fmt_short()))]
-    async fn handle_conn_output(&mut self, peer: NodeId, out: ConnStep) -> Result<()> {
+    async fn handle_conn_output(&mut self, peer: EndpointId, out: ConnStep) -> Result<()> {
         let peer_info = self
             .peers
             .get_mut(&peer)
@@ -559,7 +553,7 @@ impl PeerManager {
 }
 
 fn spawn_conn_task(
-    conn_tasks: &mut JoinSet<(NodeId, ConnStep)>,
+    conn_tasks: &mut JoinSet<(EndpointId, ConnStep)>,
     peer_info: &PeerInfo,
     fut: impl Future<Output = ConnStep> + Send + 'static,
 ) -> AbortHandle {
@@ -572,7 +566,7 @@ fn spawn_conn_task(
 
 #[derive(Debug)]
 struct PeerInfo {
-    node_id: NodeId,
+    node_id: EndpointId,
     span: Span,
     pending_intents: Vec<Intent>,
     conn_state: ConnState,
@@ -651,7 +645,7 @@ impl ConnState {
 }
 
 impl PeerInfo {
-    fn new(peer: NodeId) -> Self {
+    fn new(peer: EndpointId) -> Self {
         Self {
             node_id: peer,
             span: error_span!("conn", peer=%peer.fmt_short()),
@@ -694,7 +688,7 @@ impl AcceptHandlers {
         }
     }
 
-    pub async fn accept(&self, peer: NodeId) -> Option<Intent> {
+    pub async fn accept(&self, peer: EndpointId) -> Option<Intent> {
         let init = match &self.accept_cb {
             None => Some(SessionInit::continuous(Interests::All)),
             Some(cb) => cb(peer).await,
@@ -722,11 +716,11 @@ impl AcceptHandlers {
 #[derive(Debug)]
 struct EventForwarder {
     _join_handle: AbortOnDropHandle<()>,
-    stream_sender: mpsc::Sender<(NodeId, EventReceiver)>,
+    stream_sender: mpsc::Sender<(EndpointId, EventReceiver)>,
 }
 
 impl EventForwarder {
-    fn new(event_sender: mpsc::Sender<(NodeId, EventKind)>) -> EventForwarder {
+    fn new(event_sender: mpsc::Sender<(EndpointId, EventKind)>) -> EventForwarder {
         let (stream_sender, mut stream_receiver) = mpsc::channel(16);
         let join_handle = tokio::task::spawn(async move {
             let mut streams = StreamMap::new();
@@ -750,7 +744,7 @@ impl EventForwarder {
         }
     }
 
-    pub async fn add_intent(&self, peer: NodeId, event_stream: EventReceiver) {
+    pub async fn add_intent(&self, peer: EndpointId, event_stream: EventReceiver) {
         self.stream_sender.send((peer, event_stream)).await.ok();
     }
 }

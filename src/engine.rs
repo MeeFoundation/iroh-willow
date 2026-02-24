@@ -7,7 +7,7 @@ use futures_util::{
     future::{MapErr, Shared},
     FutureExt, TryFutureExt,
 };
-use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint, NodeId};
+use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint, EndpointId};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinError,
@@ -84,7 +84,7 @@ impl Engine {
         create_store: impl 'static + Send + FnOnce() -> S,
         accept_opts: AcceptOpts,
     ) -> Self {
-        let me = endpoint.node_id();
+        let me = endpoint.id();
         let actor_handle = ActorHandle::spawn(create_store, me);
         let (pm_inbox_tx, pm_inbox_rx) = mpsc::channel(PEER_MANAGER_INBOX_CAP);
         let peer_manager = PeerManager::new(
@@ -128,7 +128,11 @@ impl Engine {
     ///
     /// This can freely be called multiple times for the same peer. The engine will merge the
     /// intents and make sure that only a single session is opened per peer.
-    pub async fn sync_with_peer(&self, peer: NodeId, init: SessionInit) -> Result<IntentHandle> {
+    pub async fn sync_with_peer(
+        &self,
+        peer: EndpointId,
+        init: SessionInit,
+    ) -> Result<IntentHandle> {
         let (intent, handle) = Intent::new(init);
         self.peer_manager_inbox
             .send(peer_manager::Input::SubmitIntent { peer, intent })
@@ -177,7 +181,9 @@ impl ProtocolHandler for Engine {
         async move {
             match this.handle_connection(conn).await {
                 Ok(()) => Ok(()),
-                Err(e) => Err(iroh::protocol::AcceptError::User { source: e.into() }),
+                Err(e) => Err(iroh::protocol::AcceptError::from_err(
+                    std::io::Error::other(e),
+                )),
             }
         }
     }

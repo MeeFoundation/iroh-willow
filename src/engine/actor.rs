@@ -2,7 +2,7 @@ use std::{sync::Arc, thread::JoinHandle};
 
 use anyhow::Result;
 use futures_lite::{stream::Stream, StreamExt};
-use iroh::NodeId;
+use iroh::EndpointId;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
@@ -42,13 +42,13 @@ pub struct ActorHandle {
 }
 
 impl ActorHandle {
-    pub fn spawn_memory(payloads: iroh_blobs::store::mem::MemStore, me: NodeId) -> Self {
+    pub fn spawn_memory(payloads: iroh_blobs::store::mem::MemStore, me: EndpointId) -> Self {
         Self::spawn(move || crate::store::memory::Store::new(payloads), me)
     }
 
     pub fn spawn<S: Storage>(
         create_store: impl 'static + Send + FnOnce() -> S,
-        me: NodeId,
+        me: EndpointId,
     ) -> ActorHandle {
         let (inbox_tx, inbox_rx) = tokio::sync::mpsc::channel(INBOX_CAP);
         let join_handle = std::thread::Builder::new()

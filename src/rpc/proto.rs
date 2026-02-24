@@ -1,4 +1,4 @@
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr, EndpointId};
 use iroh_blobs::Hash;
 use nested_enum_utils::enum_conversions;
 use quic_rpc::pattern::try_server_streaming::StreamCreated;
@@ -65,7 +65,7 @@ pub enum Request {
     #[try_server_streaming(create_error = RpcError, item_error = RpcError, item = StoreEvent)]
     Subscribe(SubscribeRequest),
     // requests for endpoint info
-    #[rpc(response = RpcResult<NodeAddr>)]
+    #[rpc(response = RpcResult<EndpointAddr>)]
     Addr(AddrRequest),
     #[rpc(response = RpcResult<()>)]
     AddAddr(AddAddrRequest),
@@ -89,7 +89,7 @@ pub enum Response {
     Subscribe(RpcResult<StoreEvent>),
     StreamCreated(RpcResult<StreamCreated>),
     // responses for endpoint info
-    Addr(RpcResult<NodeAddr>),
+    Addr(RpcResult<EndpointAddr>),
     AddAddr(RpcResult<()>),
 }
 
@@ -200,7 +200,7 @@ pub struct ImportCapsResponse;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncWithPeerRequest {
-    pub peer: NodeId,
+    pub peer: EndpointId,
     pub init: SessionInit,
 }
 
@@ -284,5 +284,5 @@ pub struct AddrRequest;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AddAddrRequest {
-    pub addr: NodeAddr,
+    pub addr: EndpointAddr,
 }

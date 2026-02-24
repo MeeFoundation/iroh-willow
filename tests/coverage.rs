@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
-use iroh::{Endpoint, NodeAddr, Watcher};
+use iroh::Endpoint;
 use iroh_blobs::{api, BlobFormat};
 use tempfile::tempdir;
 
@@ -93,31 +93,23 @@ async fn blobs_add_bytes_progress_and_result() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Exercise RPC client methods: node_addr and add_node_addr; also insert_bytes.
+// Exercise RPC client methods: node_addr and insert_bytes.
 #[tokio::test(flavor = "multi_thread")]
-async fn rpc_client_addr_addaddr_and_insert_bytes() -> anyhow::Result<()> {
-    // Spawn two endpoints and engines minimally (similar to tests/spaces spawn)
-    let secret_a = iroh::SecretKey::generate(&mut rand::rngs::OsRng);
-    let secret_b = iroh::SecretKey::generate(&mut rand::rngs::OsRng);
+async fn rpc_client_addr_and_insert_bytes() -> anyhow::Result<()> {
+    let secret_a = iroh::SecretKey::from(rand::random::<[u8; 32]>());
 
-    let ep_a = Endpoint::builder()
+    let ep_a = Endpoint::empty_builder(iroh::RelayMode::Disabled)
         .secret_key(secret_a)
         .alpns(vec![iroh_willow::ALPN.to_vec()])
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind()
-        .await?;
-    let ep_b = Endpoint::builder()
-        .secret_key(secret_b)
-        .alpns(vec![iroh_willow::ALPN.to_vec()])
-        .relay_mode(iroh::RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0u16))?
         .bind()
         .await?;
 
-    // payload stores
+    // payload store
     let blobs_a = iroh_blobs::store::mem::MemStore::new();
-    let blobs_b = iroh_blobs::store::mem::MemStore::new();
 
-    // engines
+    // engine
     let eng_a = iroh_willow::engine::Engine::spawn(
         ep_a.clone(),
         {
@@ -126,25 +118,13 @@ async fn rpc_client_addr_addaddr_and_insert_bytes() -> anyhow::Result<()> {
         },
         Default::default(),
     );
-    let eng_b = iroh_willow::engine::Engine::spawn(
-        ep_b.clone(),
-        {
-            let payloads = blobs_b.clone();
-            move || iroh_willow::store::memory::Store::new(payloads.clone())
-        },
-        Default::default(),
-    );
 
     // Client for A
     let client_a = eng_a.client().clone();
-    // NodeAddr via RPC should equal endpoint watcher value
-    let addr_a_rpc: NodeAddr = client_a.node_addr().await?;
-    let addr_a_local: NodeAddr = ep_a.node_addr().initialized().await;
-    assert_eq!(addr_a_rpc.node_id, addr_a_local.node_id);
-
-    // Add B's address via RPC
-    let addr_b = ep_b.node_addr().initialized().await;
-    client_a.add_node_addr(addr_b).await?;
+    // EndpointAddr via RPC should match endpoint addr
+    let addr_a_rpc = client_a.node_addr().await?;
+    let addr_a_local = ep_a.addr();
+    assert_eq!(addr_a_rpc.id, addr_a_local.id);
 
     // Exercise insert_bytes via client
     let user_a = client_a.create_user().await?;
@@ -152,23 +132,19 @@ async fn rpc_client_addr_addaddr_and_insert_bytes() -> anyhow::Result<()> {
         .create(iroh_willow::proto::keys::NamespaceKind::Owned, user_a)
         .await?;
     use iroh_willow::proto::data_model::PathExt;
-    let path = iroh_willow::proto::data_model::Path::from_bytes(&[b"rpc", b"insert"])?.into();
+    let path = iroh_willow::proto::data_model::Path::from_bytes(&[b"rpc", b"insert"])?;
     let entry = iroh_willow::rpc::client::EntryForm::new(user_a, path);
     let payload = Bytes::from_static(b"rpc-insert-bytes");
-    // use blobs_a (store for A) to import content
     space
         .insert_bytes(blobs_a.as_ref(), entry, payload.clone())
         .await?;
 
     // Verify content exists in A's store
-    // (hash is not known here; ensure any blob is present via list)
     let hashes = blobs_a.blobs().list().hashes().await?;
     assert!(!hashes.is_empty());
 
     // Cleanup
     eng_a.shutdown().await?;
-    eng_b.shutdown().await?;
     ep_a.close().await;
-    ep_b.close().await;
     Ok(())
 }

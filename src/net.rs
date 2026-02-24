@@ -9,7 +9,7 @@ use iroh::{
     endpoint::{
         Connection, ConnectionError, ReadError, ReadExactError, RecvStream, SendStream, VarInt,
     },
-    NodeId,
+    EndpointId,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, trace};
@@ -61,7 +61,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(derive_more::Debug)]
 pub(crate) struct ConnHandle {
     pub(crate) our_role: Role,
-    pub(crate) peer: NodeId,
+    pub(crate) peer: EndpointId,
     #[debug("InitialTransmission")]
     pub(crate) initial_transmission: InitialTransmission,
     #[debug("Channels")]
@@ -272,7 +272,7 @@ async fn recv_loop(
     trace!(?channel, "recv: start");
     let max_buffer_size = channel_writer.max_buffer_size();
     while let Some(buf) = recv_stream
-        .read_chunk(max_buffer_size, true)
+        .read_chunk(max_buffer_size)
         .await
         .context("failed to read from quic stream")?
     {
@@ -416,8 +416,11 @@ mod tests {
 
     use anyhow::Result;
     use futures_lite::StreamExt;
-    use iroh::{endpoint::Connection, Endpoint, NodeAddr, NodeId, SecretKey, Watcher};
-    use rand::SeedableRng;
+    use iroh::{
+        address_lookup::memory::MemoryLookup, endpoint::Connection, Endpoint, EndpointAddr,
+        EndpointId, SecretKey,
+    };
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha12Rng;
     use tracing::{info, Instrument};
 
@@ -445,14 +448,14 @@ mod tests {
     }
 
     pub async fn run(
-        me: NodeId,
+        me: EndpointId,
         actor: ActorHandle,
         conn: Connection,
         our_role: Role,
         our_nonce: AccessChallenge,
         intents: Vec<Intent>,
     ) -> Result<(SessionHandle, tokio::task::JoinHandle<Result<()>>)> {
-        let peer = conn.remote_node_id()?;
+        let peer = conn.remote_id();
         let span = tracing::error_span!("conn", me=%me.fmt_short(), peer=%peer.fmt_short());
         let (initial_transmission, channel_streams) = establish(&conn, our_role, our_nonce)
             .instrument(span.clone())
@@ -476,14 +479,17 @@ mod tests {
         let n_betty = parse_env_var("N_BETTY", 100);
         let n_alfie = parse_env_var("N_ALFIE", 100);
 
-        let (ep_alfie, node_id_alfie, _) = create_endpoint(&mut rng).await?;
-        let (ep_betty, node_id_betty, addr_betty) = create_endpoint(&mut rng).await?;
+        let lookup = MemoryLookup::new();
+        let (ep_alfie, id_alfie, _) = create_endpoint(&mut rng, lookup.clone()).await?;
+        let (ep_betty, id_betty, addr_betty) = create_endpoint(&mut rng, lookup.clone()).await?;
+        lookup.add_endpoint_info(ep_alfie.addr());
+        lookup.add_endpoint_info(ep_betty.addr());
 
         let start = Instant::now();
         let mut expected_entries = BTreeSet::new();
 
-        let handle_alfie = ActorHandle::spawn_memory(Default::default(), node_id_alfie);
-        let handle_betty = ActorHandle::spawn_memory(Default::default(), node_id_betty);
+        let handle_alfie = ActorHandle::spawn_memory(Default::default(), id_alfie);
+        let handle_betty = ActorHandle::spawn_memory(Default::default(), id_betty);
 
         let user_alfie = handle_alfie.create_user().await?;
         let user_betty = handle_betty.create_user().await?;
@@ -534,7 +540,16 @@ mod tests {
         let start = Instant::now();
         let (conn_alfie, conn_betty) = tokio::join!(
             async move { ep_alfie.connect(addr_betty, ALPN).await.unwrap() },
-            async move { ep_betty.accept().await.unwrap().await.unwrap() }
+            async move {
+                ep_betty
+                    .accept()
+                    .await
+                    .unwrap()
+                    .accept()
+                    .unwrap()
+                    .await
+                    .unwrap()
+            }
         );
         info!("connecting took {:?}", start.elapsed());
 
@@ -543,7 +558,7 @@ mod tests {
         let nonce_betty = AccessChallenge::generate_with_rng(&mut rng);
         let (session_alfie, session_betty) = tokio::join!(
             run(
-                node_id_alfie,
+                id_alfie,
                 handle_alfie.clone(),
                 conn_alfie.clone(),
                 Role::Alfie,
@@ -551,7 +566,7 @@ mod tests {
                 vec![intent_alfie]
             ),
             run(
-                node_id_betty,
+                id_betty,
                 handle_betty.clone(),
                 conn_betty.clone(),
                 Role::Betty,
@@ -610,11 +625,14 @@ mod tests {
         iroh_test::logging::setup_multithreaded();
         let mut rng = create_rng("net_live_data");
 
-        let (ep_alfie, node_id_alfie, _) = create_endpoint(&mut rng).await?;
-        let (ep_betty, node_id_betty, addr_betty) = create_endpoint(&mut rng).await?;
+        let lookup = MemoryLookup::new();
+        let (ep_alfie, id_alfie, _) = create_endpoint(&mut rng, lookup.clone()).await?;
+        let (ep_betty, id_betty, addr_betty) = create_endpoint(&mut rng, lookup.clone()).await?;
+        lookup.add_endpoint_info(ep_alfie.addr());
+        lookup.add_endpoint_info(ep_betty.addr());
 
-        let handle_alfie = ActorHandle::spawn_memory(Default::default(), node_id_alfie);
-        let handle_betty = ActorHandle::spawn_memory(Default::default(), node_id_betty);
+        let handle_alfie = ActorHandle::spawn_memory(Default::default(), id_alfie);
+        let handle_betty = ActorHandle::spawn_memory(Default::default(), id_betty);
 
         let user_alfie = handle_alfie.create_user().await?;
         let user_betty = handle_betty.create_user().await?;
@@ -664,7 +682,16 @@ mod tests {
         let start = Instant::now();
         let (conn_alfie, conn_betty) = tokio::join!(
             async move { ep_alfie.connect(addr_betty, ALPN).await.unwrap() },
-            async move { ep_betty.accept().await.unwrap().await.unwrap() }
+            async move {
+                ep_betty
+                    .accept()
+                    .await
+                    .unwrap()
+                    .accept()
+                    .unwrap()
+                    .await
+                    .unwrap()
+            }
         );
         info!("connecting took {:?}", start.elapsed());
 
@@ -707,7 +734,7 @@ mod tests {
 
         let (session_alfie, session_betty) = tokio::join!(
             run(
-                node_id_alfie,
+                id_alfie,
                 handle_alfie.clone(),
                 conn_alfie.clone(),
                 Role::Alfie,
@@ -715,7 +742,7 @@ mod tests {
                 vec![intent_alfie]
             ),
             run(
-                node_id_betty,
+                id_betty,
                 handle_betty.clone(),
                 conn_betty.clone(),
                 Role::Betty,
@@ -780,16 +807,19 @@ mod tests {
 
     pub async fn create_endpoint(
         rng: &mut rand_chacha::ChaCha12Rng,
-    ) -> Result<(Endpoint, NodeId, NodeAddr)> {
-        let ep = Endpoint::builder()
-            .secret_key(SecretKey::generate(rng))
-            .relay_mode(iroh::RelayMode::Disabled)
+        lookup: MemoryLookup,
+    ) -> Result<(Endpoint, EndpointId, EndpointAddr)> {
+        let ep = Endpoint::empty_builder(iroh::RelayMode::Disabled)
+            .secret_key(SecretKey::from(rng.gen::<[u8; 32]>()))
             .alpns(vec![ALPN.to_vec()])
+            .clear_ip_transports()
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0u16))?
+            .address_lookup(lookup)
             .bind()
             .await?;
-        let addr = ep.node_addr().initialized().await;
-        let node_id = ep.node_id();
-        Ok((ep, node_id, addr))
+        let addr = ep.addr();
+        let id = ep.id();
+        Ok((ep, id, addr))
     }
 
     async fn get_entries(store: &ActorHandle, namespace: NamespaceId) -> Result<BTreeSet<Entry>> {

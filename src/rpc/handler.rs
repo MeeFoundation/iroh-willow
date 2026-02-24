@@ -15,8 +15,6 @@ use crate::{
     Engine,
 };
 
-use iroh::Watcher;
-
 impl Engine {
     pub async fn handle_spaces_request<C: ChannelTypes<RpcService>>(
         self,
@@ -170,17 +168,16 @@ impl Engine {
             }
             Addr(msg) => {
                 chan.rpc(msg, self, |engine, _req| async move {
-                    let addr = engine.endpoint.node_addr().initialized().await;
+                    let addr = engine.endpoint.addr();
                     Ok(addr)
                 })
                 .await
             }
             AddAddr(msg) => {
                 chan.rpc(msg, self, |engine, req| async move {
-                    engine
-                        .endpoint
-                        .add_node_addr(req.addr)
-                        .map_err(|e| RpcError::new(&e))?;
+                    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+                    lookup.add_endpoint_info(req.addr);
+                    engine.endpoint.address_lookup().add(lookup);
                     Ok(())
                 })
                 .await

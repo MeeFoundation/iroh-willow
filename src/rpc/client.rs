@@ -19,7 +19,7 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use futures_lite::{Stream, StreamExt};
 use futures_util::{Sink, SinkExt};
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr, EndpointId};
 use iroh_blobs::Hash;
 use quic_rpc::transport::ConnectionErrors;
 use ref_cast::RefCast;
@@ -138,17 +138,17 @@ impl<C: quic_rpc::Connector<RpcService>> Client<C> {
         let init = SessionInit::new(interests, mode);
         let mut intents = SyncHandleSet::default();
         for addr in ticket.nodes {
-            let node_id = addr.node_id;
+            let id = addr.id;
             self.add_node_addr(addr).await?;
-            let intent = self.sync_with_peer(node_id, init.clone()).await?;
-            intents.insert(node_id, intent)?;
+            let intent = self.sync_with_peer(id, init.clone()).await?;
+            intents.insert(id, intent)?;
         }
         let space = Space::new(self.rpc.clone(), namespace);
         Ok((space, intents))
     }
 
     /// Synchronize with a peer.
-    pub async fn sync_with_peer(&self, peer: NodeId, init: SessionInit) -> Result<SyncHandle> {
+    pub async fn sync_with_peer(&self, peer: EndpointId, init: SessionInit) -> Result<SyncHandle> {
         let req = SyncWithPeerRequest { peer, init };
         let (update_tx, event_rx) = self.rpc.bidi(req).await?;
 
@@ -181,18 +181,19 @@ impl<C: quic_rpc::Connector<RpcService>> Client<C> {
         Ok(())
     }
 
-    /// Fetches the [`NodeAddr`] for this node.
+    /// Fetches the [`EndpointAddr`] for this node.
     ///
-    /// See also [`Endpoint::node_addr`](iroh::Endpoint::node_addr).
-    pub async fn node_addr(&self) -> Result<NodeAddr> {
+    /// See also [`Endpoint::addr`](iroh::Endpoint::addr).
+    pub async fn node_addr(&self) -> Result<EndpointAddr> {
         let addr = self.rpc.rpc(AddrRequest).await??;
         Ok(addr)
     }
 
     /// Adds a known node address to this node.
     ///
-    /// See also [`Endpoint::add_node_addr`](iroh::Endpoint::add_node_addr).
-    pub async fn add_node_addr(&self, addr: NodeAddr) -> Result<()> {
+    /// Internally uses [`MemoryLookup`](iroh::address_lookup::memory::MemoryLookup)
+    /// to register the address with the endpoint's address lookup system.
+    pub async fn add_node_addr(&self, addr: EndpointAddr) -> Result<()> {
         self.rpc.rpc(AddAddrRequest { addr }).await??;
         Ok(())
     }
@@ -338,7 +339,7 @@ impl<C: quic_rpc::Connector<RpcService>> Space<C> {
     /// If you want to specify the capabilities to submit more concretely, use [`Client::sync_with_peer`].
     pub async fn sync_once(
         &self,
-        node: NodeId,
+        node: EndpointId,
         areas: AreaOfInterestSelector,
     ) -> Result<SyncHandle> {
         let cap = CapSelector::any(self.namespace_id);
@@ -358,7 +359,7 @@ impl<C: quic_rpc::Connector<RpcService>> Space<C> {
     /// If you want to specify the capabilities to submit more concretely, use [`Client::sync_with_peer`].
     pub async fn sync_continuously(
         &self,
-        node: NodeId,
+        node: EndpointId,
         areas: AreaOfInterestSelector,
     ) -> Result<SyncHandle> {
         let cap = CapSelector::any(self.namespace_id);
@@ -434,7 +435,7 @@ pub struct SpaceTicket {
     /// Capabilities for a space.
     pub caps: Vec<CapabilityPack>,
     /// List of nodes to sync with.
-    pub nodes: Vec<NodeAddr>,
+    pub nodes: Vec<EndpointAddr>,
 }
 
 /// Handle to a synchronization intent.
@@ -571,8 +572,8 @@ impl SyncProgress {
 #[derive(Default, derive_more::Debug)]
 #[debug("MergedSyncHandle({:?})", self.event_rx.keys().collect::<Vec<_>>())]
 pub struct SyncHandleSet {
-    event_rx: StreamMap<NodeId, StreamNotifyClose<EventReceiver>>,
-    intents: HashMap<NodeId, HandleState>,
+    event_rx: StreamMap<EndpointId, StreamNotifyClose<EventReceiver>>,
+    intents: HashMap<EndpointId, HandleState>,
 }
 
 #[derive(derive_more::Debug)]
@@ -586,7 +587,11 @@ impl SyncHandleSet {
     /// Add a sync intent to the set.
     ///
     /// Returns an error if there is already a sync intent for this peer in the set.
-    pub fn insert(&mut self, peer: NodeId, handle: SyncHandle) -> Result<(), IntentExistsError> {
+    pub fn insert(
+        &mut self,
+        peer: EndpointId,
+        handle: SyncHandle,
+    ) -> Result<(), IntentExistsError> {
         if let std::collections::hash_map::Entry::Vacant(e) = self.intents.entry(peer) {
             let SyncHandle {
                 update_tx,
@@ -602,7 +607,7 @@ impl SyncHandleSet {
     }
 
     /// Removes a sync intent from the set.
-    pub fn remove(&mut self, peer: &NodeId) -> Option<SyncHandle> {
+    pub fn remove(&mut self, peer: &EndpointId) -> Option<SyncHandle> {
         self.event_rx.remove(peer).and_then(|event_rx| {
             self.intents.remove(peer).map(|state| {
                 SyncHandle::new(
@@ -627,7 +632,7 @@ impl SyncHandleSet {
     }
 
     /// Wait for all intents to complete.
-    pub async fn complete_all(mut self) -> HashMap<NodeId, Result<Completion>> {
+    pub async fn complete_all(mut self) -> HashMap<EndpointId, Result<Completion>> {
         let futs = self.intents.drain().map(|(node_id, state)| {
             let event_rx = self
                 .event_rx
@@ -648,7 +653,7 @@ impl SyncHandleSet {
 }
 
 impl Stream for SyncHandleSet {
-    type Item = (NodeId, Event);
+    type Item = (EndpointId, Event);
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
@@ -668,7 +673,7 @@ impl Stream for SyncHandleSet {
 /// Error returned when trying to insert a [`SyncHandle`] into a [`SyncHandleSet] for a peer that is already in the set.
 #[derive(Debug, thiserror::Error)]
 #[error("The set already contains a sync intent for this peer.")]
-pub struct IntentExistsError(pub NodeId);
+pub struct IntentExistsError(pub EndpointId);
 
 /// Form to insert a new entry
 #[derive(Debug)]

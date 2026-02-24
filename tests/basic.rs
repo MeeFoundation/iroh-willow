@@ -22,8 +22,11 @@ use iroh_willow::{
     },
 };
 use meadowcap::AccessMode;
+use rand::Rng;
 use tokio::time::sleep;
 use util::spawn_three;
+
+use iroh::address_lookup::memory::MemoryLookup;
 
 use self::util::{create_rng, insert, setup_and_delegate, spawn_two, Peer};
 
@@ -34,7 +37,7 @@ async fn peer_manager_two_intents() -> Result<()> {
 
     let [alfie, betty] = spawn_two(&mut rng).await?;
     let (namespace, _alfie_user, betty_user) = setup_and_delegate(&alfie, &betty).await?;
-    let betty_node_id = betty.node_id();
+    let betty_node_id = betty.id();
 
     insert(&betty, namespace, betty_user, &[b"foo", b"1"], "foo 1").await?;
     insert(&betty, namespace, betty_user, &[b"bar", b"2"], "bar 2").await?;
@@ -139,7 +142,7 @@ async fn peer_manager_update_intent() -> Result<()> {
 
     let [alfie, betty] = spawn_two(&mut rng).await?;
     let (namespace, _alfie_user, betty_user) = setup_and_delegate(&alfie, &betty).await?;
-    let betty_node_id = betty.node_id();
+    let betty_node_id = betty.id();
 
     insert(&betty, namespace, betty_user, &[b"foo"], "foo 1").await?;
     insert(&betty, namespace, betty_user, &[b"bar"], "bar 1").await?;
@@ -211,7 +214,7 @@ async fn peer_manager_shutdown_immediate() -> Result<()> {
 
     let [alfie, betty] = spawn_two(&mut rng).await?;
     let (_namespace, _alfie_user, _betty_user) = setup_and_delegate(&alfie, &betty).await?;
-    let betty_node_id = betty.node_id();
+    let betty_node_id = betty.id();
     let mut intent = alfie
         .sync_with_peer(betty_node_id, SessionInit::reconcile_once(Interests::all()))
         .await?;
@@ -231,7 +234,7 @@ async fn peer_manager_shutdown_timeout() -> Result<()> {
 
     let [alfie, betty] = spawn_two(&mut rng).await?;
     let (_namespace, _alfie_user, _betty_user) = setup_and_delegate(&alfie, &betty).await?;
-    let betty_node_id = betty.node_id();
+    let betty_node_id = betty.id();
     let mut intent = alfie
         .sync_with_peer(betty_node_id, SessionInit::reconcile_once(Interests::all()))
         .await?;
@@ -251,8 +254,8 @@ async fn peer_manager_twoway_loop() -> Result<()> {
     let (namespace, alfie_user, betty_user) = setup_and_delegate(&alfie, &betty).await?;
     insert(&alfie, namespace, alfie_user, &[b"foo"], "foo 1").await?;
     insert(&betty, namespace, betty_user, &[b"bar"], "bar 1").await?;
-    let alfie_node_id = alfie.node_id();
-    let betty_node_id = betty.node_id();
+    let alfie_node_id = alfie.id();
+    let betty_node_id = betty.id();
     let rounds = 20;
     for i in 0..rounds {
         println!("\n\nROUND {i} of {rounds}\n\n");
@@ -290,7 +293,12 @@ async fn read_back_write() -> Result<()> {
     iroh_test::logging::setup_multithreaded();
     let mut rng = create_rng("read_back_write");
 
-    let alfie = Peer::spawn(SecretKey::generate(&mut rng), Default::default()).await?;
+    let alfie = Peer::spawn(
+        SecretKey::from(rng.gen::<[u8; 32]>()),
+        Default::default(),
+        MemoryLookup::new(),
+    )
+    .await?;
 
     let user_alfie = alfie.create_user().await?;
     let namespace_id = alfie
@@ -357,7 +365,7 @@ async fn owned_namespace_subspace_write_sync() -> Result<()> {
         Interests::builder().add_full_cap(namespace_id),
         SessionMode::ReconcileOnce,
     );
-    let mut intent = alfie.sync_with_peer(betty.node_id(), init).await.unwrap();
+    let mut intent = alfie.sync_with_peer(betty.id(), init).await.unwrap();
     let completion = intent.complete().await.expect("failed to complete intent");
     assert_eq!(completion, Completion::Partial);
     let entries: Vec<_> = alfie
@@ -376,7 +384,7 @@ mod util {
     use anyhow::Result;
     use bytes::Bytes;
     use futures_concurrency::future::TryJoin;
-    use iroh::{Endpoint, NodeId};
+    use iroh::{address_lookup::memory::MemoryLookup, Endpoint, EndpointId};
     use iroh_willow::{
         engine::{AcceptOpts, Engine},
         form::EntryForm,
@@ -407,11 +415,17 @@ mod util {
     }
 
     impl Peer {
-        pub async fn spawn(secret_key: iroh::SecretKey, accept_opts: AcceptOpts) -> Result<Self> {
-            let endpoint = Endpoint::builder()
+        pub async fn spawn(
+            secret_key: iroh::SecretKey,
+            accept_opts: AcceptOpts,
+            lookup: MemoryLookup,
+        ) -> Result<Self> {
+            let endpoint = Endpoint::empty_builder(iroh::RelayMode::Disabled)
                 .secret_key(secret_key)
-                .relay_mode(iroh::RelayMode::Disabled)
                 .alpns(vec![ALPN.to_vec()])
+                .address_lookup(lookup)
+                .clear_ip_transports()
+                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0u16))?
                 .bind()
                 .await?;
             let blobs = iroh_blobs::store::mem::MemStore::default();
@@ -464,8 +478,8 @@ mod util {
             Ok(())
         }
 
-        pub fn node_id(&self) -> NodeId {
-            self.endpoint.node_id()
+        pub fn id(&self) -> EndpointId {
+            self.endpoint.id()
         }
     }
 
@@ -476,61 +490,37 @@ mod util {
         }
     }
 
-    pub async fn spawn_two(mut rng: &mut impl CryptoRngCore) -> Result<[Peer; 2]> {
+    pub async fn spawn_two(rng: &mut (impl CryptoRngCore + rand::Rng)) -> Result<[Peer; 2]> {
+        let lookup = MemoryLookup::new();
         let peers = [
-            iroh::SecretKey::generate(&mut rng),
-            iroh::SecretKey::generate(&mut rng),
+            iroh::SecretKey::from(rng.gen::<[u8; 32]>()),
+            iroh::SecretKey::from(rng.gen::<[u8; 32]>()),
         ]
-        .map(|secret_key| Peer::spawn(secret_key, Default::default()))
+        .map(|secret_key| Peer::spawn(secret_key, Default::default(), lookup.clone()))
         .try_join()
         .await?;
 
-        use iroh::Watcher;
-        peers[0]
-            .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
-
-        peers[1]
-            .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
+        for peer in &peers {
+            lookup.add_endpoint_info(peer.endpoint.addr());
+        }
 
         Ok(peers)
     }
 
-    pub async fn spawn_three(rng: &mut impl CryptoRngCore) -> Result<[Peer; 3]> {
+    pub async fn spawn_three(rng: &mut (impl CryptoRngCore + rand::Rng)) -> Result<[Peer; 3]> {
+        let lookup = MemoryLookup::new();
         let peers = [
-            iroh_base::SecretKey::generate(&mut *rng),
-            iroh_base::SecretKey::generate(&mut *rng),
-            iroh_base::SecretKey::generate(&mut *rng),
+            iroh_base::SecretKey::from(rng.gen::<[u8; 32]>()),
+            iroh_base::SecretKey::from(rng.gen::<[u8; 32]>()),
+            iroh_base::SecretKey::from(rng.gen::<[u8; 32]>()),
         ]
-        .map(|secret_key| Peer::spawn(secret_key, Default::default()))
+        .map(|secret_key| Peer::spawn(secret_key, Default::default(), lookup.clone()))
         .try_join()
         .await?;
 
-        use iroh::Watcher;
-        peers[0]
-            .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
-
-        peers[0]
-            .endpoint
-            .add_node_addr(peers[2].endpoint.node_addr().initialized().await)?;
-
-        peers[1]
-            .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
-
-        peers[1]
-            .endpoint
-            .add_node_addr(peers[2].endpoint.node_addr().initialized().await)?;
-
-        peers[2]
-            .endpoint
-            .add_node_addr(peers[0].endpoint.node_addr().initialized().await)?;
-
-        peers[2]
-            .endpoint
-            .add_node_addr(peers[1].endpoint.node_addr().initialized().await)?;
+        for peer in &peers {
+            lookup.add_endpoint_info(peer.endpoint.addr());
+        }
 
         Ok(peers)
     }
@@ -579,7 +569,7 @@ async fn peer_manager_empty_payload() -> Result<()> {
 
     let [alfie, betty] = spawn_two(&mut rng).await?;
     let (namespace, _alfie_user, betty_user) = setup_and_delegate(&alfie, &betty).await?;
-    let betty_node_id = betty.node_id();
+    let betty_node_id = betty.id();
 
     insert(&betty, namespace, betty_user, &[b"foo"], "").await?;
 
@@ -626,7 +616,7 @@ async fn peer_manager_big_payload() -> Result<()> {
 
     let [alfie, betty] = spawn_two(&mut rng).await?;
     let (namespace, _alfie_user, betty_user) = setup_and_delegate(&alfie, &betty).await?;
-    let betty_node_id = betty.node_id();
+    let betty_node_id = betty.id();
 
     let payload = Bytes::from(vec![2u8; 1024 * 128]);
     insert(&betty, namespace, betty_user, &[b"foo"], payload.clone()).await?;
@@ -688,7 +678,7 @@ async fn delegate_path(
 
     let init = SessionInit::new(interest, session_mode);
 
-    let mut intent = betty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+    let mut intent = betty.sync_with_peer(alfie.id(), init).await.unwrap();
 
     intent.complete().await.unwrap();
 
@@ -925,7 +915,7 @@ async fn transitive_sync() -> Result<()> {
 
     let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
 
-    let mut intent = betty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+    let mut intent = betty.sync_with_peer(alfie.id(), init).await.unwrap();
 
     intent.complete().await.unwrap();
 
@@ -955,7 +945,7 @@ async fn transitive_sync() -> Result<()> {
 
     let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
 
-    let mut intent = catty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+    let mut intent = catty.sync_with_peer(alfie.id(), init).await.unwrap();
 
     intent.complete().await.unwrap();
 
@@ -1029,7 +1019,7 @@ async fn sync_with_replica() -> Result<()> {
 
     let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
 
-    let mut intent = betty.sync_with_peer(alfie.node_id(), init).await.unwrap();
+    let mut intent = betty.sync_with_peer(alfie.id(), init).await.unwrap();
 
     intent.complete().await.unwrap();
 
@@ -1059,7 +1049,7 @@ async fn sync_with_replica() -> Result<()> {
 
     let init = SessionInit::new(interest.clone(), SessionMode::ReconcileOnce);
 
-    let mut intent = catty.sync_with_peer(betty.node_id(), init).await.unwrap();
+    let mut intent = catty.sync_with_peer(betty.id(), init).await.unwrap();
 
     intent.complete().await.unwrap();
 

@@ -40,12 +40,12 @@ futures-lite = "2.3.0"
 futures-util = "0.3.30"
 genawaiter = "0.99.1"
 hex = "0.4.3"
-iroh-base = { version = "0.91.2" }
+iroh-base = { version = "0.96" }
 iroh-blake3 = "1.4.5"
-iroh-blobs = { version = "0.91" }
+iroh-blobs = { version = "0.98" }
 iroh-io = { version = "0.6", features = ["stats"] }
 iroh-metrics = { version = "0.35", optional = true }
-iroh = { version = "0.91.2" }
+iroh = { version = "0.96.1" }
 meadowcap = "0.1.0"
 nested_enum_utils = "0.1.0"
 postcard = { version = "1", default-features = false, features = [
@@ -77,11 +77,11 @@ willow-store = { git = "https://github.com/n0-computer/willow-store.git", branch
 zerocopy = { version = "0.7", features = ["derive"] }
 zerocopy-derive = "0.7"
 data-encoding = "2.6.0"
-bao-tree = "0.15"
+bao-tree = "0.16"
 
 [dev-dependencies]
 iroh-test = { version = "0.31" }
-iroh = { version = "0.91.2", features = ["test-utils"] }
+iroh = { version = "0.96.1", features = ["test-utils"] }
 rand_chacha = "0.3.1"
 tokio = { version = "1", features = ["sync", "macros"] }
 proptest = "1.2.0"
