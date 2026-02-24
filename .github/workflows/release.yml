@@ -62,7 +62,7 @@ jobs:
             echo "version is: ${{ env.RELEASE_VERSION }}"
           fi
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - name: Create GitHub release
@@ -131,13 +131,13 @@ jobs:
         steps:
         - name: Checkout
           if: inputs.base_hash == ''
-          uses: actions/checkout@v4
+          uses: actions/checkout@v6
           with:
             submodules: recursive
         
         - name: Checkout specified commit
           if: inputs.base_hash != ''
-          uses: actions/checkout@v4
+          uses: actions/checkout@v6
           with:
             ref: ${{ inputs.base_hash }}
             submodules: recursive
@@ -186,7 +186,7 @@ jobs:
             
         - name: attach artifacts
           if: matrix.os != 'windows-latest'
-          uses: actions/upload-artifact@v4
+          uses: actions/upload-artifact@v6
           with:
             name: iroh-${{env.RELEASE_OS }}-${{env.RELEASE_ARCH}}
             path: target/${{ matrix.cargo_targets }}/optimized-release/iroh
@@ -194,7 +194,7 @@ jobs:
         
         - name: attach artifacts
           if: matrix.os == 'windows-latest'
-          uses: actions/upload-artifact@v4
+          uses: actions/upload-artifact@v6
           with:
             name: iroh-windows-amd64.exe
             path: target/${{ matrix.cargo_targets }}/optimized-release/iroh.exe
@@ -281,7 +281,7 @@ jobs:
             asset_path: ${{ env.ASSET }}
 
         - name: attach artifacts
-          uses: actions/upload-artifact@v4
+          uses: actions/upload-artifact@v6
           if : matrix.os != 'windows-latest'
           with:
             name: iroh-${{ matrix.release-os }}-${{ matrix.release-arch }}-bundle
@@ -290,7 +290,7 @@ jobs:
             retention-days: 1
           
         - name: attach artifacts
-          uses: actions/upload-artifact@v4
+          uses: actions/upload-artifact@v6
           if : matrix.os == 'windows-latest'
           with:
             name: iroh-${{ matrix.release-os }}-${{ matrix.release-arch }}-bundle
