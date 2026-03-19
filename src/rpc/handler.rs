@@ -177,7 +177,11 @@ impl Engine {
                 chan.rpc(msg, self, |engine, req| async move {
                     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
                     lookup.add_endpoint_info(req.addr);
-                    engine.endpoint.address_lookup().add(lookup);
+                    engine
+                        .endpoint
+                        .address_lookup()
+                        .map_err(|e| serde_error::Error::new(&e))?
+                        .add(lookup);
                     Ok(())
                 })
                 .await

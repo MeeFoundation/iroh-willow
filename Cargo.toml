@@ -40,12 +40,12 @@ futures-lite = "2.3.0"
 futures-util = "0.3.30"
 genawaiter = "0.99.1"
 hex = "0.4.3"
-iroh-base = { version = "0.96" }
+iroh-base = { version = "0.97" }
 iroh-blake3 = "1.4.5"
-iroh-blobs = { version = "0.98" }
+iroh-blobs = { version = "0.99" }
 iroh-io = { version = "0.6", features = ["stats"] }
-iroh-metrics = { version = "0.35", optional = true }
-iroh = { version = "0.96.1" }
+iroh-metrics = { version = "0.38", optional = true }
+iroh = { version = "0.97" }
 meadowcap = "0.1.0"
 nested_enum_utils = "0.1.0"
 postcard = { version = "1", default-features = false, features = [
@@ -81,7 +81,7 @@ bao-tree = "0.16"
 
 [dev-dependencies]
 iroh-test = { version = "0.31" }
-iroh = { version = "0.96.1", features = ["test-utils"] }
+iroh = { version = "0.97", features = ["test-utils"] }
 rand_chacha = "0.3.1"
 tokio = { version = "1", features = ["sync", "macros"] }
 proptest = "1.2.0"
