@@ -539,8 +539,8 @@ mod tests {
 
         let start = Instant::now();
         let (conn_alfie, conn_betty) = tokio::join!(
-            async move { ep_alfie.connect(addr_betty, ALPN).await.unwrap() },
-            async move {
+            async { ep_alfie.connect(addr_betty, ALPN).await.unwrap() },
+            async {
                 ep_betty
                     .accept()
                     .await
@@ -617,6 +617,9 @@ mod tests {
         assert!(alfie_entries == expected_entries, "alfie expected entries");
         assert!(betty_entries == expected_entries, "betty expected entries");
 
+        ep_alfie.close().await;
+        ep_betty.close().await;
+
         Ok(())
     }
 
@@ -681,8 +684,8 @@ mod tests {
 
         let start = Instant::now();
         let (conn_alfie, conn_betty) = tokio::join!(
-            async move { ep_alfie.connect(addr_betty, ALPN).await.unwrap() },
-            async move {
+            async { ep_alfie.connect(addr_betty, ALPN).await.unwrap() },
+            async {
                 ep_betty
                     .accept()
                     .await
@@ -802,6 +805,9 @@ mod tests {
         assert!(alfie_entries == expected_entries, "alfie expected entries");
         assert!(betty_entries == expected_entries, "betty expected entries");
 
+        ep_alfie.close().await;
+        ep_betty.close().await;
+
         Ok(())
     }
 
@@ -809,7 +815,7 @@ mod tests {
         rng: &mut rand_chacha::ChaCha12Rng,
         lookup: MemoryLookup,
     ) -> Result<(Endpoint, EndpointId, EndpointAddr)> {
-        let ep = Endpoint::empty_builder(iroh::RelayMode::Disabled)
+        let ep = Endpoint::empty_builder()
             .secret_key(SecretKey::from(rng.gen::<[u8; 32]>()))
             .alpns(vec![ALPN.to_vec()])
             .clear_ip_transports()

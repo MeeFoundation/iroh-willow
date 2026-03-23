@@ -420,7 +420,7 @@ mod util {
             accept_opts: AcceptOpts,
             lookup: MemoryLookup,
         ) -> Result<Self> {
-            let endpoint = Endpoint::empty_builder(iroh::RelayMode::Disabled)
+            let endpoint = Endpoint::empty_builder()
                 .secret_key(secret_key)
                 .alpns(vec![ALPN.to_vec()])
                 .address_lookup(lookup)

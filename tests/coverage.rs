@@ -98,7 +98,7 @@ async fn blobs_add_bytes_progress_and_result() -> anyhow::Result<()> {
 async fn rpc_client_addr_and_insert_bytes() -> anyhow::Result<()> {
     let secret_a = iroh::SecretKey::from(rand::random::<[u8; 32]>());
 
-    let ep_a = Endpoint::empty_builder(iroh::RelayMode::Disabled)
+    let ep_a = Endpoint::empty_builder()
         .secret_key(secret_a)
         .alpns(vec![iroh_willow::ALPN.to_vec()])
         .clear_ip_transports()

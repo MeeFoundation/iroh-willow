@@ -36,7 +36,7 @@ async fn spawn_node(
     let blobs_store = iroh_blobs::store::mem::MemStore::default();
 
     let secret_key = SecretKey::from(rand::random::<[u8; 32]>());
-    let endpoint = Endpoint::empty_builder(iroh::RelayMode::Disabled)
+    let endpoint = Endpoint::empty_builder()
         .secret_key(secret_key)
         .alpns(vec![iroh_willow::ALPN.to_vec()])
         .address_lookup(lookup)
