@@ -4932,6 +4932,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "ucan"
 version = "0.5.0"
+source = "git+https://github.com/VKFisher/rs-ucan.git?branch=uwill-compat#1bb33428161899a9e78fcb3e94fe5364bb0511ce"
 dependencies = [
  "bs58",
  "ed25519-dalek 2.2.0",
@@ -5063,6 +5064,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 [[package]]
 name = "varsig"
 version = "0.1.0"
+source = "git+https://github.com/VKFisher/rs-ucan.git?branch=uwill-compat#1bb33428161899a9e78fcb3e94fe5364bb0511ce"
 dependencies = [
  "async-signature",
  "ed25519-dalek 2.2.0",

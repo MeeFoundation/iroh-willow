@@ -47,7 +47,7 @@ iroh-blobs = { version = "0.99" }
 iroh-io = { version = "0.6", features = ["stats"] }
 iroh-metrics = { version = "0.38", optional = true }
 iroh = { version = "0.97" }
-ucan = { path = "../rs-ucan/ucan" }
+ucan = { git = "https://github.com/VKFisher/rs-ucan.git", branch = "uwill-compat" }
 nested_enum_utils = "0.1.0"
 postcard = { version = "1", default-features = false, features = [
     "alloc",
