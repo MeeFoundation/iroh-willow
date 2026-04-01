@@ -19,6 +19,7 @@ use crate::{
         meadowcap::{self, McCapability, ReadAuthorisation},
         wgps::Fingerprint,
     },
+    uwill::UWillChain,
 };
 
 /// Storage backend.
@@ -29,13 +30,24 @@ pub trait Storage: Debug + Clone + 'static {
     type Secrets: SecretStorage;
     type Payloads: BlobStoreHandle;
     type Caps: CapsStorage;
+    type Revocations: RevocationStorage;
     fn entries(&self) -> &Self::Entries;
     fn secrets(&self) -> &Self::Secrets;
     fn payloads(&self) -> &Self::Payloads;
     fn caps(&self) -> &Self::Caps;
+    fn revocations(&self) -> &Self::Revocations;
 
     fn payloads_api(&self) -> &iroh_blobs::api::Store {
         self.payloads().api()
+    }
+}
+
+/// Revocation storage.
+pub trait RevocationStorage: Debug + Clone + 'static {
+    fn is_revoked(&self, cid: &ipld_core::cid::Cid) -> bool;
+    fn apply_revoked_cid(&self, cid: ipld_core::cid::Cid);
+    fn chain_is_revoked(&self, chain: &UWillChain) -> bool {
+        chain.delegation_cids().iter().any(|cid| self.is_revoked(cid))
     }
 }
 

@@ -61,6 +61,7 @@ pub enum Input {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Output {
     SendMessage(Message),
     NewIntersection(PaiIntersection),
@@ -167,6 +168,18 @@ impl PaiFinder {
         if !self.submitted.insert(authorisation.clone()) {
             return;
         }
+
+        // Reject expired or not-yet-valid read capabilities.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let read_cap = authorisation.read_cap();
+        if read_cap.is_expired(now_secs) || read_cap.is_not_yet_valid(now_secs) {
+            tracing::warn!("skipping expired/not-yet-valid read cap in PAI");
+            return;
+        }
+
         trace!(?authorisation, "pai submit auth");
         let read_cap = authorisation.read_cap();
         let fragment_kit = PaiScheme::get_fragment_kit(read_cap);
@@ -619,7 +632,7 @@ mod tests {
         assert_eq!(&cap, betty_auth.subspace_cap().unwrap());
         let namespace = cap.granted_namespace();
         alfie
-            .input(Input::ReceivedVerifiedSubspaceCapReply(handle, *namespace))
+            .input(Input::ReceivedVerifiedSubspaceCapReply(handle, namespace))
             .await;
 
         let next = alfie.next_intersection().await;
@@ -633,6 +646,90 @@ mod tests {
 
         alfie.join().await;
         betty.join().await;
+    }
+
+    /// Two different namespaces — no overlap possible.
+    #[tokio::test]
+    async fn pai_different_namespaces() {
+        let _guard = iroh_test::logging::setup();
+        LocalSet::new()
+            .run_until(async {
+                let mut rng = rand_chacha::ChaCha12Rng::seed_from_u64(4);
+                let ns1 = NamespaceSecretKey::generate(&mut rng, NamespaceKind::Owned);
+                let ns2 = NamespaceSecretKey::generate(&mut rng, NamespaceKind::Owned);
+
+                let (_, alfie_public) = keypair(&mut rng);
+                let (_, betty_public) = keypair(&mut rng);
+
+                let auth_alfie =
+                    ReadAuthorisation::new_owned(&ns1, alfie_public).unwrap();
+                let auth_betty =
+                    ReadAuthorisation::new_owned(&ns2, betty_public).unwrap();
+
+                let (mut alfie, mut betty) = Handle::create_two();
+
+                alfie.submit(Box::new(auth_alfie)).await;
+                betty.submit(Box::new(auth_betty)).await;
+
+                transfer::<PaiBindFragment>(&mut alfie, &betty).await;
+                transfer::<PaiBindFragment>(&mut betty, &alfie).await;
+                transfer::<PaiReplyFragment>(&mut alfie, &betty).await;
+                transfer::<PaiReplyFragment>(&mut betty, &alfie).await;
+
+                // Different namespaces — no intersection
+                alfie.join().await;
+                betty.join().await;
+            })
+            .await;
+    }
+
+    /// Delegated three-level chain works through PAI.
+    #[tokio::test]
+    async fn pai_delegated_chain() {
+        let _guard = iroh_test::logging::setup();
+        LocalSet::new()
+            .run_until(async {
+                let mut rng = rand_chacha::ChaCha12Rng::seed_from_u64(5);
+                let namespace = NamespaceSecretKey::generate(&mut rng, NamespaceKind::Owned);
+
+                let (root_secret, root_public) = keypair(&mut rng);
+                let root_auth =
+                    ReadAuthorisation::new_owned(&namespace, root_public).unwrap();
+
+                let (alice_secret, alice_public) = keypair(&mut rng);
+                let (_, bob_public) = keypair(&mut rng);
+
+                // root → alice (full area)
+                let alice_auth = root_auth
+                    .delegate(&root_secret, alice_public, Area::new_full())
+                    .unwrap();
+
+                // alice → bob (full area, longer chain)
+                let bob_auth = alice_auth
+                    .delegate(&alice_secret, bob_public, Area::new_full())
+                    .unwrap();
+
+                let (mut alfie, mut betty) = Handle::create_two();
+
+                // Alfie uses the root auth, betty uses bob's 3-level chain
+                alfie.submit(Box::new(root_auth.clone())).await;
+                betty.submit(Box::new(bob_auth.clone())).await;
+
+                transfer::<PaiBindFragment>(&mut alfie, &betty).await;
+                transfer::<PaiBindFragment>(&mut betty, &alfie).await;
+                transfer::<PaiReplyFragment>(&mut alfie, &betty).await;
+                transfer::<PaiReplyFragment>(&mut betty, &alfie).await;
+
+                let intersection = alfie.next_intersection().await;
+                assert_eq!(&*intersection.authorisation, &root_auth);
+
+                let intersection = betty.next_intersection().await;
+                assert_eq!(&*intersection.authorisation, &bob_auth);
+
+                alfie.join().await;
+                betty.join().await;
+            })
+            .await;
     }
 
     fn keypair<R: CryptoRngCore + ?Sized>(rng: &mut R) -> (UserSecretKey, UserId) {

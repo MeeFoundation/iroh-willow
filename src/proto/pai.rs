@@ -74,9 +74,9 @@ impl PaiScheme {
         let granted_path = granted_area.path().clone();
 
         match granted_area.subspace() {
-            AreaSubspace::Any => FragmentKit::Complete(*granted_namespace, granted_path),
+            AreaSubspace::Any => FragmentKit::Complete(granted_namespace, granted_path),
             AreaSubspace::Id(granted_subspace) => {
-                FragmentKit::Selective(*granted_namespace, *granted_subspace, granted_path)
+                FragmentKit::Selective(granted_namespace, *granted_subspace, granted_path)
             }
         }
     }

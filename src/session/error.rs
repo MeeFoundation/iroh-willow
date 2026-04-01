@@ -82,6 +82,14 @@ pub enum Error {
     ConnectionClosed(#[source] anyhow::Error),
     #[error("Session was closed by peer")]
     SessionClosedByPeer,
+    #[error("invocation validation failed: {0}")]
+    InvocationValidation(String),
+    #[error("invocation build failed: {0}")]
+    InvocationBuild(String),
+    #[error("missing secret key for capability receiver")]
+    MissingSecret,
+    #[error("capability chain has been revoked")]
+    ChainRevoked,
 }
 
 #[derive(Debug, thiserror::Error)]

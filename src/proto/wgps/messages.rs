@@ -24,7 +24,12 @@ use crate::{
 
 pub type StaticToken = meadowcap::serde_encoding::SerdeMcCapability;
 // pub type ValidatedStaticToken = meadowcap::ValidatedCapability;
-pub type DynamicToken = meadowcap::UserSignature;
+
+/// The per-entry authorization token — a serialized UCAN Invocation.
+/// The invocation carries the signed proof that the writer is authorized
+/// to write this specific entry. Resolved proof delegations come from
+/// the bound StaticToken.
+pub type DynamicToken = meadowcap::serde_encoding::SerdeInvocation;
 
 /// Whereas write access control is baked into the Willow data model,
 /// read access control resides in the replication layer.
@@ -179,6 +184,7 @@ impl Decoder for Message {
 }
 
 #[derive(Debug, derive_more::From, strum::Display)]
+#[allow(clippy::large_enum_variant)]
 pub enum ReconciliationMessage {
     SendFingerprint(ReconciliationSendFingerprint),
     AnnounceEntries(ReconciliationAnnounceEntries),
@@ -214,6 +220,7 @@ impl From<ReconciliationMessage> for Message {
 }
 
 #[derive(Debug, derive_more::From, strum::Display)]
+#[allow(clippy::large_enum_variant)]
 pub enum DataMessage {
     SendEntry(DataSendEntry),
     SendPayload(DataSendPayload),
@@ -278,28 +285,22 @@ pub struct CommitmentReveal {
 
 /// Bind a ReadCapability to a CapabilityHandle.
 ///
-/// The SetupBindReadCapability messages let peers bind a ReadCapability for later reference.
-/// To do so, they must present a valid SyncSignature over their challenge, thus demonstrating
-/// they hold the secret key corresponding to receiver of the ReadCapability.
-///
-/// These requirements allow us to encode SetupBindReadCapability messages more efficiently.
-/// The handle must be bound to the fragment (primary, if possible) of the capability with the
-/// longest Path prefix that is in the intersection of the two peers’ fragments.
+/// The peer proves they hold a read capability by presenting a UCAN
+/// Invocation (`willow/read`) that includes the session challenge nonce.
+/// The invocation carries the capability chain as resolved proofs.
 ///
 /// SetupBindReadCapability messages use the CapabilityChannel.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetupBindReadCapability {
-    /// A ReadCapability that the peer wishes to reference in future messages.
-    pub capability: ReadCapability,
+    /// A UCAN Invocation proving read capability ownership.
+    /// Contains the read capability chain + challenge signature.
+    pub invocation: meadowcap::serde_encoding::SerdeUWillInvocation,
 
     /// The IntersectionHandle, bound by the sender, of the capability’s fragment
     /// with the longest Path in the intersection of the fragments.
     ///
     /// If both a primary and secondary such fragment exist, choose the primary one.
     pub handle: IntersectionHandle,
-
-    /// The SyncSignature issued by the Receiver of the capability over the sender’s challenge.
-    pub signature: SyncSignature,
 }
 
 /// Bind an AreaOfInterest to an AreaOfInterestHandle.
@@ -534,8 +535,6 @@ pub struct PaiRequestSubspaceCapability {
 pub struct PaiReplySubspaceCapability {
     /// The handle of the PaiRequestSubspaceCapability message that this answers (hence, an IntersectionHandle bound by the receiver of this message).
     pub handle: IntersectionHandle,
-    /// A SubspaceCapability whose granted namespace corresponds to the request this answers.
-    pub capability: SubspaceCapability,
-    /// The SyncSubspaceSignature issued by the receiver of the capability over the sender’s challenge.
-    pub signature: SyncSignature,
+    /// A UCAN Invocation (`willow/enumerate`) proving namespace membership.
+    pub invocation: meadowcap::serde_encoding::SerdeUWillInvocation,
 }

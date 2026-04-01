@@ -1,18 +1,12 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use ed25519_dalek::ed25519;
 use redb::{
     MultimapTable, MultimapTableDefinition, ReadOnlyMultimapTable, ReadOnlyTable, ReadTransaction,
     Table, TableDefinition, WriteTransaction,
 };
-use ufotofu::sync::{consumer::IntoVec, producer::FromSlice};
-use willow_encoding::sync::{RelativeDecodable, RelativeEncodable};
 
-use crate::proto::{
-    grouping::Area,
-    meadowcap::{serde_encoding::SerdeReadAuthorisation, McCapability, ReadAuthorisation},
-};
+use crate::proto::meadowcap::{serde_encoding::SerdeReadAuthorisation, McCapability, ReadAuthorisation};
 
 // These consts are here so we don't accidentally break the schema!
 pub type NamespaceId = [u8; 32];
@@ -21,10 +15,10 @@ pub type UserId = [u8; 32];
 pub const NAMESPACE_NODES: TableDefinition<NamespaceId, willow_store::NodeId> =
     TableDefinition::new("namespace-nodes-0");
 
-pub const AUTH_TOKENS: TableDefinition<ed25519::SignatureBytes, WriteCap> =
-    TableDefinition::new("auth-tokens-0");
-pub const AUTH_TOKEN_REFCOUNT: TableDefinition<ed25519::SignatureBytes, u64> =
-    TableDefinition::new("auth-token-refcounts-0");
+pub const AUTH_TOKENS: TableDefinition<[u8; 64], StoredInvocation> =
+    TableDefinition::new("auth-tokens-1");
+pub const AUTH_TOKEN_REFCOUNT: TableDefinition<[u8; 64], u64> =
+    TableDefinition::new("auth-token-refcounts-1");
 
 pub const USER_SECRETS: TableDefinition<UserId, [u8; 32]> = TableDefinition::new("user-secrets-0");
 pub const NAMESPACE_SECRETS: TableDefinition<NamespaceId, [u8; 32]> =
@@ -34,6 +28,9 @@ pub const READ_CAPS: MultimapTableDefinition<NamespaceId, ReadCap> =
     MultimapTableDefinition::new("read-caps-0");
 pub const WRITE_CAPS: MultimapTableDefinition<NamespaceId, WriteCap> =
     MultimapTableDefinition::new("write-caps-0");
+
+/// Revoked delegation CIDs. Value is `()` — it's just a set.
+pub const REVOCATIONS: TableDefinition<&[u8], ()> = TableDefinition::new("revocations-0");
 
 self_cell::self_cell! {
     struct OpenWriteInner {
@@ -76,12 +73,13 @@ impl OpenWrite {
 
 pub struct Tables<'tx> {
     pub namespace_nodes: Table<'tx, NamespaceId, willow_store::NodeId>,
-    pub auth_tokens: Table<'tx, ed25519::SignatureBytes, WriteCap>,
-    pub auth_token_refcount: Table<'tx, ed25519::SignatureBytes, u64>,
+    pub auth_tokens: Table<'tx, [u8; 64], StoredInvocation>,
+    pub auth_token_refcount: Table<'tx, [u8; 64], u64>,
     pub user_secrets: Table<'tx, UserId, [u8; 32]>,
     pub namespace_secrets: Table<'tx, NamespaceId, [u8; 32]>,
     pub read_caps: MultimapTable<'tx, NamespaceId, ReadCap>,
     pub write_caps: MultimapTable<'tx, NamespaceId, WriteCap>,
+    pub revocations: Table<'tx, &'static [u8], ()>,
     pub node_store: willow_store::Tables<'tx>,
 }
 
@@ -95,6 +93,7 @@ impl<'tx> Tables<'tx> {
             namespace_secrets: tx.open_table(NAMESPACE_SECRETS)?,
             read_caps: tx.open_multimap_table(READ_CAPS)?,
             write_caps: tx.open_multimap_table(WRITE_CAPS)?,
+            revocations: tx.open_table(REVOCATIONS)?,
             node_store: willow_store::Tables::open(tx)?,
         })
     }
@@ -102,9 +101,10 @@ impl<'tx> Tables<'tx> {
 
 pub struct OpenRead {
     pub namespace_nodes: ReadOnlyTable<NamespaceId, willow_store::NodeId>,
-    pub auth_tokens: ReadOnlyTable<ed25519::SignatureBytes, WriteCap>,
+    pub auth_tokens: ReadOnlyTable<[u8; 64], StoredInvocation>,
     pub read_caps: ReadOnlyMultimapTable<NamespaceId, ReadCap>,
     pub write_caps: ReadOnlyMultimapTable<NamespaceId, WriteCap>,
+    pub revocations: ReadOnlyTable<&'static [u8], ()>,
     pub node_store: willow_store::Snapshot,
 }
 
@@ -115,6 +115,7 @@ impl OpenRead {
             auth_tokens: tx.open_table(AUTH_TOKENS)?,
             read_caps: tx.open_multimap_table(READ_CAPS)?,
             write_caps: tx.open_multimap_table(WRITE_CAPS)?,
+            revocations: tx.open_table(REVOCATIONS)?,
             node_store: willow_store::Snapshot::open(tx)?,
         })
     }
@@ -148,9 +149,11 @@ impl redb::Value for WriteCap {
     where
         Self: 'a,
     {
-        let capability =
-            McCapability::relative_decode(&Area::new_full(), &mut FromSlice::new(data)).unwrap();
-        WriteCap(capability)
+        let raw: crate::uwill::UWillChainRaw =
+            serde_ipld_dagcbor::from_slice(data).expect("invalid WriteCap in database");
+        let validated = crate::uwill::UWillChain::from_chain(raw)
+            .expect("invalid WriteCap chain in database");
+        WriteCap(validated)
     }
 
     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
@@ -158,16 +161,45 @@ impl redb::Value for WriteCap {
         Self: 'a,
         Self: 'b,
     {
-        let mut consumer = IntoVec::new();
-        value
-            .0
-            .relative_encode(&Area::new_full(), &mut consumer)
-            .unwrap_or_else(|e| match e {}); // infallible
-        consumer.into_vec()
+        serde_ipld_dagcbor::to_vec(value.0.chain()).expect("WriteCap serialization failed")
     }
 
     fn type_name() -> redb::TypeName {
         redb::TypeName::new("WriteCap")
+    }
+}
+
+/// Stored UCAN invocation (write authorization token).
+#[derive(Debug)]
+pub struct StoredInvocation(pub crate::uwill::UWillInvocation);
+
+impl redb::Value for StoredInvocation {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = Vec<u8>;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        let inv: crate::uwill::UWillInvocation =
+            serde_ipld_dagcbor::from_slice(data).expect("invalid StoredInvocation in database");
+        StoredInvocation(inv)
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        serde_ipld_dagcbor::to_vec(&value.0).expect("StoredInvocation serialization failed")
+    }
+
+    fn type_name() -> redb::TypeName {
+        redb::TypeName::new("StoredInvocation")
     }
 }
 

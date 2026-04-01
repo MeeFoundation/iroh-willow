@@ -260,9 +260,9 @@ async fn space_to_map(
 
         let value = blobs.blobs().get_bytes(entry.payload_digest().0).await?;
 
-        let user = auth.capability.receiver();
+        let user = auth.capability().receiver();
         let peer = role_lookup
-            .get(user)
+            .get(&user)
             .ok_or_else(|| anyhow::anyhow!("foreign write?"))?;
 
         map.insert((*peer, key), String::from_utf8_lossy(&value).to_string());

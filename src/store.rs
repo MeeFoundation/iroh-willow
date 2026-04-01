@@ -44,7 +44,11 @@ pub(crate) struct Store<S: Storage> {
 impl<S: Storage> Store<S> {
     pub fn new(storage: S) -> Self {
         Self {
-            auth: Auth::new(storage.secrets().clone(), storage.caps().clone()),
+            auth: Auth::new(
+                storage.secrets().clone(),
+                storage.caps().clone(),
+                storage.revocations().clone(),
+            ),
             storage,
         }
     }
@@ -55,6 +59,10 @@ impl<S: Storage> Store<S> {
 
     pub fn secrets(&self) -> &S::Secrets {
         self.storage.secrets()
+    }
+
+    pub fn revocations(&self) -> &S::Revocations {
+        self.storage.revocations()
     }
 
     #[allow(dead_code)]
@@ -99,7 +107,9 @@ impl<S: Storage> Store<S> {
         // (but should not be, IMO).
         // Not using the `_unchecked` variant has the cost of an additional signature verification,
         // so significant.
-        let token = capability.authorisation_token(&entry, secret_key)?;
+        let token = crate::uwill::invocation::build_write_invocation(
+            &entry, &capability, &secret_key,
+        ).map_err(|e| anyhow::anyhow!("{e}"))?;
         let authorised_entry = AuthorisedEntry::new_unchecked(entry, token);
         let inserted = self
             .entries()

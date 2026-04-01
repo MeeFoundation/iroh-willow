@@ -91,6 +91,7 @@ impl CurrentPayload {
         Ok(())
     }
 
+    #[allow(clippy::unused_async)]
     pub async fn recv_chunk(&mut self, _store: &api::Store, chunk: Bytes) -> anyhow::Result<()> {
         let state = self.0.as_mut().ok_or(Error::InvalidMessageInCurrentState)?;
         let len = chunk.len();

@@ -183,6 +183,7 @@ impl EntryForm {
 
 /// Select which capability to use for authenticating a new entry.
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
+#[allow(clippy::large_enum_variant)]
 pub enum AuthForm {
     /// Use any available capability which covers the entry and whose receiver is the provided
     /// user.
@@ -197,7 +198,7 @@ impl AuthForm {
     pub fn user_id(&self) -> UserId {
         match self {
             AuthForm::Any(user) => *user,
-            AuthForm::Exact(cap) => *cap.receiver(),
+            AuthForm::Exact(cap) => cap.receiver(),
         }
     }
 }

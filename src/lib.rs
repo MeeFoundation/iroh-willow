@@ -12,6 +12,7 @@ pub mod rpc;
 pub mod session;
 pub mod store;
 pub mod util;
+pub mod uwill;
 
 pub use engine::Engine;
 pub use net::ALPN;

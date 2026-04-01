@@ -31,7 +31,7 @@ use crate::{
         static_tokens::StaticTokens,
         Channels, Error, EventSender, Role, SessionEvent, SessionId, SessionUpdate,
     },
-    store::{traits::Storage, Store},
+    store::{traits::{RevocationStorage, Storage}, Store},
     util::{
         channel::Receiver,
         stream::{Cancelable, CancelableReceiver},
@@ -232,7 +232,7 @@ pub(crate) async fn run_session<S: Storage>(
                     }
                 }
                 Output::SignAndSendCapability { handle, capability } => {
-                    let message = caps.sign_capability(store.secrets(), handle, capability)?;
+                    let message = caps.build_read_cap_invocation(store.secrets(), handle, capability)?;
                     channel_sender.send(message).await?;
                 }
             }
@@ -262,7 +262,7 @@ pub(crate) async fn run_session<S: Storage>(
                         .await;
                 }
                 Output::SignAndSendSubspaceCap(handle, cap) => {
-                    let message = caps.sign_subspace_capability(store.secrets(), cap, handle)?;
+                    let message = caps.build_enumerate_cap_invocation(store.secrets(), cap, handle)?;
                     channel_sender.send(Box::new(message)).await?;
                 }
             }
@@ -318,7 +318,10 @@ pub(crate) async fn run_session<S: Storage>(
     let caps_recv_loop = with_span(error_span!("caps_recv"), async {
         while let Some(message) = capability_recv.try_next().await? {
             let handle = message.handle;
-            caps.validate_and_bind_theirs(message.capability.0, message.signature)?;
+            let chain = caps.validate_and_bind_read_invocation(message.invocation.0)?;
+            if store.revocations().chain_is_revoked(&chain) {
+                return Err(Error::ChainRevoked);
+            }
             pai_inbox
                 .send(pai::Input::ReceivedReadCapForIntersection(handle))
                 .await
@@ -335,6 +338,7 @@ pub(crate) async fn run_session<S: Storage>(
             &channel_sender,
             &pai_inbox,
             &event_sender,
+            &store,
         )
         .await;
         // Once the control loop closed, close the inboxes.
@@ -353,7 +357,7 @@ pub(crate) async fn run_session<S: Storage>(
             if !cap.granted_area().includes_area(&area_of_interest.area) {
                 return Err(Error::UnauthorisedArea);
             }
-            let namespace = *cap.granted_namespace();
+            let namespace = cap.granted_namespace();
             intersection_inbox
                 .send(aoi_finder::Input::ReceivedValidatedAoi {
                     namespace,
@@ -445,13 +449,14 @@ pub(crate) async fn run_session<S: Storage>(
     result
 }
 
-async fn control_loop(
+async fn control_loop<S: Storage>(
     mut control_recv: Cancelable<Receiver<Message>>,
     our_role: Role,
     caps: &Capabilities,
     sender: &ChannelSenders,
     pai_inbox: &mpsc::Sender<pai::Input>,
     event_sender: &EventSender,
+    store: &Store<S>,
 ) -> Result<(), Error> {
     // Reveal our nonce.
     let reveal_message = caps.reveal_commitment()?;
@@ -491,11 +496,14 @@ async fn control_loop(
                 if !caps.is_revealed() {
                     return Err(Error::InvalidMessageInCurrentState);
                 }
-                caps.verify_subspace_cap(&msg.capability, &msg.signature)?;
+                let cap = caps.validate_enumerate_cap_invocation(&msg.invocation.0)?;
+                if store.revocations().chain_is_revoked(&cap) {
+                    return Err(Error::ChainRevoked);
+                }
                 pai_inbox
                     .send(pai::Input::ReceivedVerifiedSubspaceCapReply(
                         msg.handle,
-                        *msg.capability.granted_namespace(),
+                        cap.granted_namespace(),
                     ))
                     .await?;
             }

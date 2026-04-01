@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     proto::{
-        data_model::{AuthorisationToken, AuthorisedEntry, Entry},
+        data_model::{AuthorisedEntry, Entry},
         wgps::{DynamicToken, SetupBindStaticToken, StaticToken, StaticTokenHandle},
     },
     session::{channels::ChannelSenders, resource::ResourceMap, Error},
@@ -40,6 +40,12 @@ impl StaticTokens {
         Ok(handle)
     }
 
+    /// Validate and construct an `AuthorisedEntry` from wire data.
+    ///
+    /// This is the security boundary for untrusted entries from peers.
+    /// `validate_write()` runs all stateless checks (signature, chain,
+    /// expiry, syntatic_checks, entry containment). The caller must
+    /// check revocation on the returned entry's token before ingesting.
     pub async fn authorise_entry_eventually(
         &self,
         entry: Entry,
@@ -54,8 +60,12 @@ impl StaticTokens {
         })
         .await;
 
-        let token = AuthorisationToken::new(static_token.0, dynamic_token);
-        let authorised_entry = AuthorisedEntry::new(entry, token)?;
+        let chain = static_token.0;
+        let invocation = dynamic_token.0;
+        let token = crate::uwill::UWillInvocation::from_parts(invocation, chain.delegations().to_vec());
+        token.validate_write(&entry)
+            .map_err(|e| Error::InvocationValidation(e.to_string()))?;
+        let authorised_entry = AuthorisedEntry::new_unchecked(entry, token);
         Ok(authorised_entry)
     }
 }

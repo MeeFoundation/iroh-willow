@@ -13,6 +13,7 @@ use tracing::{debug, error, error_span, trace, warn, Instrument};
 use crate::{
     form::{AuthForm, EntryOrForm},
     interest::{CapSelector, CapabilityPack, DelegateTo, InterestMap, Interests},
+    uwill::UWillInvocation,
     net::ConnHandle,
     proto::{
         data_model::{AuthorisedEntry, Entry, Path, SubspaceId},
@@ -236,6 +237,12 @@ impl ActorHandle {
         reply_rx.await?
     }
 
+    pub async fn revoke_delegation(&self, record: UWillInvocation) -> Result<()> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.send(Input::RevokeDelegation { record, reply }).await?;
+        reply_rx.await?
+    }
+
     pub async fn resolve_interests(&self, interests: Interests) -> Result<InterestMap> {
         let (reply, reply_rx) = oneshot::channel();
         self.send(Input::ResolveInterests { interests, reply })
@@ -379,6 +386,10 @@ pub enum Input {
     },
     ImportCaps {
         caps: Vec<CapabilityPack>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    RevokeDelegation {
+        record: UWillInvocation,
         reply: oneshot::Sender<Result<()>>,
     },
     ResolveInterests {
@@ -601,6 +612,10 @@ impl<S: Storage> Actor<S> {
             }
             Input::ImportCaps { caps, reply } => {
                 let res = self.store.auth().import_caps(caps);
+                send_reply(reply, res.map_err(anyhow::Error::from))
+            }
+            Input::RevokeDelegation { record, reply } => {
+                let res = self.store.auth().apply_revocation(&record);
                 send_reply(reply, res.map_err(anyhow::Error::from))
             }
             Input::DelegateCaps {

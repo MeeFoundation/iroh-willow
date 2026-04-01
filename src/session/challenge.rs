@@ -1,8 +1,5 @@
 use super::{Error, Role};
-use crate::proto::{
-    keys::{UserPublicKey, UserSignature},
-    wgps::{AccessChallenge, AccessChallengeBytes, ChallengeHash},
-};
+use crate::proto::wgps::{AccessChallenge, AccessChallengeBytes, ChallengeHash};
 
 /// Data from the initial transmission
 ///
@@ -68,10 +65,10 @@ impl ChallengeState {
         Ok(*challenge)
     }
 
-    pub fn verify(&self, user_key: &UserPublicKey, signature: &UserSignature) -> Result<(), Error> {
-        let their_challenge = self.get_theirs()?;
-        user_key.verify(their_challenge, signature)?;
-        Ok(())
+    /// The peer's challenge bytes — used to verify received invocations.
+    pub fn verifiable(&self) -> Result<[u8; 32], Error> {
+        let challenge = self.get_theirs()?;
+        Ok(*challenge)
     }
 
     fn get_ours(&self) -> Result<&AccessChallengeBytes, Error> {

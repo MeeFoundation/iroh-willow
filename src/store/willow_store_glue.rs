@@ -41,6 +41,20 @@ impl FixedSize for StoredAuthorisedEntry {
     const SIZE: usize = std::mem::size_of::<Self>();
 }
 
+/// Compute a 64-byte identifier for an invocation token.
+///
+/// Uses SHA-256 of the DAG-CBOR-serialized invocation, zero-padded to 64 bytes
+/// to fit the `ed25519::SignatureBytes` field used as the redb table key.
+pub(crate) fn invocation_token_id(token: &crate::uwill::UWillInvocation) -> ed25519::SignatureBytes {
+    use sha2::Digest as _;
+    let bytes = serde_ipld_dagcbor::to_vec(token.invocation())
+        .expect("invocation serialization failed");
+    let hash = sha2::Sha256::digest(&bytes);
+    let mut id = [0u8; 64];
+    id[..32].copy_from_slice(&hash);
+    id
+}
+
 impl StoredAuthorisedEntry {
     pub fn from_authorised_entry(entry: &AuthorisedEntry) -> (Point<IrohWillowParams>, Self) {
         let point = willow_store::Point::<IrohWillowParams>::new(
@@ -49,7 +63,7 @@ impl StoredAuthorisedEntry {
             &path_to_blobseq(entry.entry().path()),
         );
         let entry = Self {
-            authorisation_token_id: entry.token().signature.to_bytes(),
+            authorisation_token_id: invocation_token_id(entry.token()),
             payload_digest: *entry.entry().payload_digest().0.as_bytes(),
             payload_size: entry.entry().payload_length(),
         };

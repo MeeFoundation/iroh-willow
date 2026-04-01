@@ -12,8 +12,9 @@ use crate::{
         grouping::{AreaExt, AreaOfInterest, Range3d},
         keys::NamespaceId,
         wgps::{
-            AreaOfInterestHandle, Fingerprint, IsHandle, LengthyEntry,
+            AreaOfInterestHandle, DynamicToken, Fingerprint, IsHandle, LengthyEntry,
             ReconciliationAnnounceEntries, ReconciliationMessage, ReconciliationSendEntry,
+            StaticToken,
             ReconciliationSendFingerprint, ReconciliationSendPayload,
             ReconciliationTerminatePayload,
         },
@@ -26,7 +27,7 @@ use crate::{
         Error, Role, SessionId,
     },
     store::{
-        traits::{EntryOrigin, EntryReader, EntryStorage, SplitAction, SplitOpts, Storage},
+        traits::{EntryOrigin, EntryReader, EntryStorage, RevocationStorage, SplitAction, SplitOpts, Storage},
         Store,
     },
     util::{
@@ -161,6 +162,9 @@ impl<S: Storage> Reconciler<S> {
                         message.dynamic_token,
                     )
                     .await?;
+                if self.shared.store.revocations().chain_is_revoked(&authorised_entry.token().capability()) {
+                    return Err(Error::ChainRevoked);
+                }
                 self.entry_state.received_send_entry(
                     *authorised_entry.entry().payload_digest(),
                     authorised_entry.entry().payload_length(),
@@ -579,8 +583,8 @@ impl Target {
             let authorised_entry = authorised_entry?;
             let (entry, token) = authorised_entry.into_parts();
 
-            let static_token = token.capability.into();
-            let dynamic_token = token.signature;
+            let static_token: StaticToken = token.capability().into();
+            let dynamic_token: DynamicToken = token.invocation().clone().into();
             // TODO: partial payloads
             let payload_len = entry.payload_length();
             let available = payload_len;

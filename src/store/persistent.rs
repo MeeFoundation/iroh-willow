@@ -10,7 +10,6 @@ use std::{
 };
 
 use anyhow::Result;
-use ed25519_dalek::ed25519;
 use futures_util::Stream;
 use redb::{Database, ReadableTable};
 use willow_data_model::SubspaceId as _;
@@ -29,7 +28,7 @@ use crate::{
             SubspaceId, WriteCapability,
         },
         grouping::{Area, Range3d},
-        keys::{NamespaceSecretKey, UserId, UserSecretKey, UserSignature},
+        keys::{NamespaceSecretKey, UserId, UserSecretKey},
         meadowcap::{self, McCapability},
         wgps::Fingerprint,
     },
@@ -46,6 +45,7 @@ const MAX_COMMIT_DELAY: Duration = Duration::from_millis(500);
 pub struct Store<PS: AsRef<iroh_blobs::api::Store> + Clone> {
     payloads: PS,
     willow: Rc<WillowStore>,
+    revocations: Rc<WillowStore>,
 }
 
 impl<PS: AsRef<iroh_blobs::api::Store> + Clone> std::fmt::Debug for Store<PS> {
@@ -56,16 +56,20 @@ impl<PS: AsRef<iroh_blobs::api::Store> + Clone> std::fmt::Debug for Store<PS> {
 
 impl<PS: AsRef<iroh_blobs::api::Store> + Clone> Store<PS> {
     pub fn new(db_path: PathBuf, payload_store: PS) -> Result<Self> {
+        let willow = Rc::new(WillowStore::persistent(db_path)?);
         Ok(Self {
             payloads: payload_store,
-            willow: Rc::new(WillowStore::persistent(db_path)?),
+            revocations: willow.clone(),
+            willow,
         })
     }
 
     pub fn new_memory(payload_store: PS) -> Result<Self> {
+        let willow = Rc::new(WillowStore::memory()?);
         Ok(Self {
             payloads: payload_store,
-            willow: Rc::new(WillowStore::memory()?),
+            revocations: willow.clone(),
+            willow,
         })
     }
 }
@@ -84,6 +88,7 @@ struct Db {
 }
 
 #[derive(derive_more::Debug, Default)]
+#[allow(clippy::large_enum_variant)]
 enum CurrentTransaction {
     #[default]
     None,
@@ -218,7 +223,7 @@ impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> traits::Storage for St
     type Secrets = Rc<WillowStore>;
     type Payloads = PS;
     type Caps = Rc<WillowStore>;
-
+    type Revocations = Rc<WillowStore>;
     fn entries(&self) -> &Self::Entries {
         &self.willow
     }
@@ -233,6 +238,10 @@ impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> traits::Storage for St
 
     fn caps(&self) -> &Self::Caps {
         &self.willow
+    }
+
+    fn revocations(&self) -> &Self::Revocations {
+        &self.revocations
     }
 }
 
@@ -604,6 +613,32 @@ impl traits::SecretStorage for Rc<WillowStore> {
     }
 }
 
+impl traits::RevocationStorage for Rc<WillowStore> {
+    fn is_revoked(&self, cid: &ipld_core::cid::Cid) -> bool {
+        let Ok(tables) = self.db.snapshot() else {
+            return false;
+        };
+        tables
+            .revocations
+            .get(cid.to_bytes().as_slice())
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    fn apply_revoked_cid(&self, cid: ipld_core::cid::Cid) {
+        if let Ok(mut tables) = self.db.tables() {
+            let _ = tables.modify(|write| {
+                write
+                    .revocations
+                    .insert(cid.to_bytes().as_slice(), ())?;
+                Ok(())
+            });
+        }
+    }
+
+}
+
 impl traits::CapsStorage for Rc<WillowStore> {
     fn insert(&self, cap: CapabilityPack) -> Result<()> {
         self.db.tables()?.modify(|write| {
@@ -679,38 +714,35 @@ fn add_entry_auth_token(
     token: &AuthorisationToken,
     write: &mut tables::Tables<'_>,
 ) -> Result<[u8; 64]> {
-    let cap_sig_bytes = token.signature.to_bytes();
+    let token_id = crate::store::willow_store_glue::invocation_token_id(token);
     write
         .auth_tokens
-        .insert(cap_sig_bytes, tables::WriteCap(token.capability.clone()))?;
+        .insert(token_id, tables::StoredInvocation(token.clone()))?;
     let refcount = write
         .auth_token_refcount
-        .get(&cap_sig_bytes)?
+        .get(&token_id)?
         .map_or(1, |rc| rc.value() + 1);
-    write.auth_token_refcount.insert(cap_sig_bytes, refcount)?;
-    Ok(cap_sig_bytes)
+    write.auth_token_refcount.insert(token_id, refcount)?;
+    Ok(token_id)
 }
 
 fn get_entry_auth_token(
-    key: ed25519::SignatureBytes,
-    auth_tokens: &impl redb::ReadableTable<ed25519::SignatureBytes, tables::WriteCap>,
+    key: [u8; 64],
+    auth_tokens: &impl redb::ReadableTable<[u8; 64], tables::StoredInvocation>,
 ) -> Result<AuthorisationToken> {
-    let capability = auth_tokens
+    let stored = auth_tokens
         .get(key)?
         .ok_or_else(|| {
             anyhow::anyhow!("couldn't find authorisation token id (database inconsistent)")
         })?
         .value()
         .0;
-    Ok(AuthorisationToken {
-        capability,
-        signature: UserSignature::from_bytes(key),
-    })
+    Ok(stored)
 }
 
 fn remove_entry_auth_token(
     write: &mut tables::Tables<'_>,
-    key: ed25519::SignatureBytes,
+    key: [u8; 64],
 ) -> Result<Option<AuthorisationToken>> {
     let Some(refcount) = write.auth_token_refcount.get(&key)?.map(|v| v.value()) else {
         return Ok(None);
@@ -718,17 +750,14 @@ fn remove_entry_auth_token(
     debug_assert_ne!(refcount, 0);
     let new_refcount = refcount - 1;
     if new_refcount == 0 {
-        let capability = write
+        let stored = write
             .auth_tokens
             .remove(&key)?
             .ok_or_else(|| anyhow::anyhow!("inconsistent database state"))?
             .value()
             .0;
         write.auth_token_refcount.remove(&key)?;
-        Ok(Some(AuthorisationToken {
-            capability,
-            signature: UserSignature::from_bytes(key),
-        }))
+        Ok(Some(stored))
     } else {
         Ok(None)
     }

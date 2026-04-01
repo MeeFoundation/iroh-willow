@@ -21,7 +21,7 @@ use iroh_willow::{
         SessionInit, SessionMode,
     },
 };
-use meadowcap::AccessMode;
+use iroh_willow::proto::meadowcap::AccessMode;
 use rand::Rng;
 use tokio::time::sleep;
 use util::spawn_three;

@@ -126,6 +126,16 @@ impl Engine {
                 })
                 .await
             }
+            RevokeDelegation(msg) => {
+                chan.rpc(msg, self, |engine, req| async move {
+                    engine
+                        .revoke_delegation(req.record)
+                        .await
+                        .map(|_| RevokeDelegationResponse)
+                        .map_err(map_err)
+                })
+                .await
+            }
             SyncWithPeer(msg) => {
                 chan.bidi_streaming(msg, self, |engine, req, update_stream| {
                     // TODO: refactor to use less tasks

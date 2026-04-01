@@ -30,6 +30,7 @@ use crate::{
         meadowcap::{self, is_wider_than, McCapability, ReadAuthorisation},
     },
     store::traits,
+    uwill::revocation::RevocationStore,
 };
 
 #[derive(Clone)]
@@ -38,6 +39,7 @@ pub struct Store<PS> {
     entries: Rc<RefCell<EntryStore>>,
     payloads: PS,
     caps: Rc<RefCell<CapsStore>>,
+    revocations: Rc<RefCell<RevocationStore>>,
 }
 
 impl<PS> std::fmt::Debug for Store<PS> {
@@ -53,7 +55,17 @@ impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> Store<PS> {
             secrets: Default::default(),
             entries: Default::default(),
             caps: Default::default(),
+            revocations: Default::default(),
         }
+    }
+}
+
+impl traits::RevocationStorage for Rc<RefCell<RevocationStore>> {
+    fn is_revoked(&self, cid: &ipld_core::cid::Cid) -> bool {
+        self.borrow().is_revoked(cid)
+    }
+    fn apply_revoked_cid(&self, cid: ipld_core::cid::Cid) {
+        self.borrow_mut().revoke(cid);
     }
 }
 
@@ -62,7 +74,7 @@ impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> traits::Storage for St
     type Secrets = Rc<RefCell<SecretStore>>;
     type Payloads = PS;
     type Caps = Rc<RefCell<CapsStore>>;
-
+    type Revocations = Rc<RefCell<RevocationStore>>;
     fn entries(&self) -> &Self::Entries {
         &self.entries
     }
@@ -77,6 +89,10 @@ impl<PS: AsRef<iroh_blobs::api::Store> + Clone + 'static> traits::Storage for St
 
     fn caps(&self) -> &Self::Caps {
         &self.caps
+    }
+
+    fn revocations(&self) -> &Self::Revocations {
+        &self.revocations
     }
 }
 
@@ -105,14 +121,13 @@ impl traits::SecretStorage for Rc<RefCell<SecretStore>> {
     }
 
     fn list_users(&self) -> Vec<UserId> {
-        self.borrow().user.iter().map(|(k, _)| k).cloned().collect()
+        self.borrow().user.keys().cloned().collect()
     }
 
     fn list_namespaces(&self) -> Vec<NamespaceId> {
         self.borrow()
             .namespace
-            .iter()
-            .map(|(k, _)| k)
+            .keys()
             .cloned()
             .collect()
     }
@@ -270,7 +285,7 @@ impl traits::EntryStorage for Rc<RefCell<EntryStore>> {
     /// Removes the entry from the store.
     fn remove_entry(&self, entry: &Entry) -> anyhow::Result<bool> {
         let mut slf = self.borrow_mut();
-        Ok(slf.remove_entry(entry)?)
+        slf.remove_entry(entry)
     }
 
     fn ingest_entry(&self, entry: &AuthorisedEntry, origin: EntryOrigin) -> Result<bool> {
@@ -555,13 +570,13 @@ impl CapsStore {
         match cap {
             CapabilityPack::Read(cap) => {
                 self.read_caps
-                    .entry(*cap.read_cap().granted_namespace())
+                    .entry(cap.read_cap().granted_namespace())
                     .or_default()
                     .push(cap);
             }
             CapabilityPack::Write(cap) => {
                 self.write_caps
-                    .entry(*cap.granted_namespace())
+                    .entry(cap.granted_namespace())
                     .or_default()
                     .push(cap);
             }

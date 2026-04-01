@@ -59,6 +59,8 @@ pub enum Request {
     DelegateCaps(DelegateCapsRequest),
     #[rpc(response = RpcResult<ImportCapsResponse>)]
     ImportCaps(ImportCapsRequest),
+    #[rpc(response = RpcResult<RevokeDelegationResponse>)]
+    RevokeDelegation(RevokeDelegationRequest),
     #[bidi_streaming(update = SyncWithPeerUpdate, response = RpcResult<SyncWithPeerResponse>)]
     SyncWithPeer(SyncWithPeerRequest),
     SyncWithPeerUpdate(SyncWithPeerUpdate),
@@ -85,6 +87,7 @@ pub enum Response {
     CreateUser(RpcResult<CreateUserResponse>),
     DelegateCaps(RpcResult<DelegateCapsResponse>),
     ImportCaps(RpcResult<ImportCapsResponse>),
+    RevokeDelegation(RpcResult<RevokeDelegationResponse>),
     SyncWithPeer(RpcResult<SyncWithPeerResponse>),
     Subscribe(RpcResult<StoreEvent>),
     StreamCreated(RpcResult<StreamCreated>),
@@ -197,6 +200,14 @@ pub struct ImportCapsRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportCapsResponse;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeDelegationRequest {
+    pub record: crate::uwill::UWillInvocation,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeDelegationResponse;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncWithPeerRequest {

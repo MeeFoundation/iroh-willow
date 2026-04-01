@@ -169,9 +169,9 @@ impl From<NamespaceId> for CapSelector {
 impl CapSelector {
     /// Checks if the provided capability is matched by this [`CapSelector`].
     pub fn is_covered_by(&self, cap: &McCapability) -> bool {
-        self.namespace_id == *cap.granted_namespace()
-            && self.receiver.includes(cap.receiver())
-            && self.granted_area.is_covered_by(&cap.granted_area())
+        self.namespace_id == cap.granted_namespace()
+            && self.receiver.includes(&cap.receiver())
+            && self.granted_area.is_covered_by(cap.granted_area())
     }
 
     /// Creates a new [`CapSelector`].
@@ -265,6 +265,7 @@ impl AreaSelector {
 /// A serializable capability.
 // TODO: This doesn't really belong into this module.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum CapabilityPack {
     /// A read authorisation.
     Read(#[serde(with = "meadowcap::serde_encoding::read_authorisation")] ReadAuthorisation),
@@ -275,15 +276,15 @@ pub enum CapabilityPack {
 impl CapabilityPack {
     pub fn receiver(&self) -> UserId {
         match self {
-            CapabilityPack::Read(auth) => *auth.read_cap().receiver(),
-            CapabilityPack::Write(cap) => *cap.receiver(),
+            CapabilityPack::Read(auth) => auth.read_cap().receiver(),
+            CapabilityPack::Write(cap) => cap.receiver(),
         }
     }
 
     pub fn namespace(&self) -> NamespaceId {
         match self {
             CapabilityPack::Read(cap) => cap.namespace(),
-            CapabilityPack::Write(cap) => *cap.granted_namespace(),
+            CapabilityPack::Write(cap) => cap.granted_namespace(),
         }
     }
 

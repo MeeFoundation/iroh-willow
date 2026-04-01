@@ -7,15 +7,18 @@ use std::{
 
 use crate::{
     proto::{
-        keys::UserSignature,
-        meadowcap::{ReadCapability, SubspaceCapability},
+        meadowcap::{serde_encoding::SerdeUWillInvocation, ReadCapability, SubspaceCapability},
         wgps::{
-            AccessChallenge, CapabilityHandle, ChallengeHash, CommitmentReveal, IntersectionHandle,
-            PaiReplySubspaceCapability, SetupBindReadCapability,
+            AccessChallenge, CapabilityHandle, ChallengeHash, CommitmentReveal,
+            IntersectionHandle, PaiReplySubspaceCapability, SetupBindReadCapability,
         },
     },
     session::{challenge::ChallengeState, resource::ResourceMap, Error, Role},
     store::traits::SecretStorage,
+    uwill::{
+        invocation::{build_enumerate_invocation, build_read_invocation},
+        UWillInvocation,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -43,18 +46,6 @@ impl Capabilities {
         })))
     }
 
-    // pub fn revealed(&self) -> impl Future<Output = ()> + '_ {
-    //     std::future::poll_fn(|cx| {
-    //         let mut inner = self.0.borrow_mut();
-    //         if inner.challenge.is_revealed() {
-    //             Poll::Ready(())
-    //         } else {
-    //             inner.on_reveal_wakers.push(cx.waker().to_owned());
-    //             Poll::Pending
-    //         }
-    //     })
-    // }
-
     pub fn is_revealed(&self) -> bool {
         self.0.borrow().challenge.is_revealed()
     }
@@ -63,19 +54,26 @@ impl Capabilities {
         self.0.borrow().ours.find(cap)
     }
 
-    pub fn sign_capability<S: SecretStorage>(
+    /// Build a read capability invocation for the sync session.
+    ///
+    /// The invocation carries the read cap chain as resolved proofs and
+    /// embeds the session challenge nonce in its arguments.
+    pub fn build_read_cap_invocation<S: SecretStorage>(
         &self,
         secret_store: &S,
         intersection_handle: IntersectionHandle,
         capability: ReadCapability,
     ) -> Result<SetupBindReadCapability, Error> {
         let inner = self.0.borrow();
-        let signable = inner.challenge.signable()?;
-        let signature = secret_store.sign_user(capability.receiver(), &signable)?;
+        let challenge = inner.challenge.signable()?;
+        let user_secret = secret_store
+            .get_user(&capability.receiver())?
+            .ok_or(Error::MissingSecret)?;
+        let invocation = build_read_invocation(&challenge, &capability, &user_secret)
+            .map_err(|e| Error::InvocationBuild(e.to_string()))?;
         Ok(SetupBindReadCapability {
-            capability: capability.into(),
+            invocation: SerdeUWillInvocation(invocation),
             handle: intersection_handle,
-            signature,
         })
     }
 
@@ -83,19 +81,21 @@ impl Capabilities {
         self.0.borrow_mut().ours.bind_if_new(capability)
     }
 
-    pub fn validate_and_bind_theirs(
+    /// Validate a received read capability invocation and bind the cap.
+    ///
+    /// Caller must check revocation on the returned chain.
+    pub fn validate_and_bind_read_invocation(
         &self,
-        capability: ReadCapability,
-        signature: UserSignature,
-    ) -> Result<(), Error> {
-        // TODO(Frando): I *think* meadowcap caps are always validated (no way to construct invalid ones).
-        // capability.validate()?;
-        let mut inner = self.0.borrow_mut();
-        // TODO(Frando): We should somehow remove the `Id`/`PublicKey` split.
-        let receiver_key = capability.receiver().into_public_key()?;
-        inner.challenge.verify(&receiver_key, &signature)?;
-        inner.theirs.bind(capability);
-        Ok(())
+        invocation: UWillInvocation,
+    ) -> Result<ReadCapability, Error> {
+        let inner = self.0.borrow();
+        let their_challenge = inner.challenge.verifiable()?;
+        let chain = invocation
+            .validate_read_proof(&their_challenge)
+            .map_err(|e| Error::InvocationValidation(e.to_string()))?;
+        drop(inner);
+        self.0.borrow_mut().theirs.bind(chain.clone());
+        Ok(chain)
     }
 
     pub async fn get_theirs_eventually(&self, handle: CapabilityHandle) -> ReadCapability {
@@ -107,20 +107,18 @@ impl Capabilities {
         .await
     }
 
-    pub fn verify_subspace_cap(
+    /// Validate a received enumerate capability invocation.
+    /// Caller must check revocation on the returned chain.
+    pub fn validate_enumerate_cap_invocation(
         &self,
-        capability: &SubspaceCapability,
-        signature: &UserSignature,
-    ) -> Result<(), Error> {
-        // TODO(Frando): I *think* meadowcap caps are always validated (no way to construct invalid ones).
-        // capability.validate()?;
-        // TODO(Frando): We should somehow remove the `Id`/`PublicKey` split.
-        let receiver_key = capability.receiver().into_public_key()?;
-        self.0
-            .borrow_mut()
-            .challenge
-            .verify(&receiver_key, signature)?;
-        Ok(())
+        invocation: &UWillInvocation,
+    ) -> Result<SubspaceCapability, Error> {
+        let inner = self.0.borrow();
+        let their_challenge = inner.challenge.verifiable()?;
+        let chain = invocation
+            .validate_enumerate_proof(&their_challenge)
+            .map_err(|e| Error::InvocationValidation(e.to_string()))?;
+        Ok(chain)
     }
 
     pub fn reveal_commitment(&self) -> Result<CommitmentReveal, Error> {
@@ -145,20 +143,23 @@ impl Capabilities {
         Ok(())
     }
 
-    pub fn sign_subspace_capability<S: SecretStorage>(
+    /// Build an enumerate capability invocation for PAI awkward pair.
+    pub fn build_enumerate_cap_invocation<S: SecretStorage>(
         &self,
         secrets: &S,
         cap: SubspaceCapability,
         handle: IntersectionHandle,
     ) -> Result<PaiReplySubspaceCapability, Error> {
         let inner = self.0.borrow();
-        let signable = inner.challenge.signable()?;
-        let signature = secrets.sign_user(cap.receiver(), &signable)?;
-        let message = PaiReplySubspaceCapability {
+        let challenge = inner.challenge.signable()?;
+        let user_secret = secrets
+            .get_user(&cap.receiver())?
+            .ok_or(Error::MissingSecret)?;
+        let invocation = build_enumerate_invocation(&challenge, &cap, &user_secret)
+            .map_err(|e| Error::InvocationBuild(e.to_string()))?;
+        Ok(PaiReplySubspaceCapability {
             handle,
-            capability: cap.clone().into(),
-            signature,
-        };
-        Ok(message)
+            invocation: SerdeUWillInvocation(invocation),
+        })
     }
 }

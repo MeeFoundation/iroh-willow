@@ -118,6 +118,20 @@ impl<C: quic_rpc::Connector<RpcService>> Client<C> {
         Ok(())
     }
 
+    /// Revoke a delegation.
+    ///
+    /// The revocation record must contain a valid signature from an
+    /// issuer in the delegation chain. Once revoked, any capability
+    /// chain containing this delegation will be rejected.
+    pub async fn revoke_delegation(
+        &self,
+        record: crate::uwill::UWillInvocation,
+    ) -> Result<()> {
+        let req = RevokeDelegationRequest { record };
+        self.rpc.rpc(req).await??;
+        Ok(())
+    }
+
     /// Import a ticket and start to synchronize.
     pub async fn import_and_sync(
         &self,

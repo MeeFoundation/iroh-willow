@@ -26,8 +26,8 @@ pub type SerdeWriteCapability = meadowcap::serde_encoding::SerdeMcCapability;
 /// Timestamps are to be interpreted as a time in microseconds since the Unix epoch.
 pub type Timestamp = willow_data_model::Timestamp;
 
-// A for proving write permission.
-pub type AuthorisationToken = meadowcap::McAuthorisationToken;
+// A token for proving write permission.
+pub type AuthorisationToken = super::meadowcap::McAuthorisationToken;
 
 /// A natural number for limiting the length of path components.
 pub const MAX_COMPONENT_LENGTH: usize = 4096;
@@ -294,30 +294,26 @@ pub mod serde_encoding {
     pub struct SerdeEntry(#[serde(with = "entry")] pub Entry);
 
     pub mod authorised_entry {
-        use keys::UserSignature;
-
         use super::*;
-        use crate::proto::meadowcap::serde_encoding::SerdeMcCapability;
         pub fn serialize<S: Serializer>(
             entry: &AuthorisedEntry,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
             let (entry, token) = entry.clone().into_parts();
-            (
-                SerdeEntry(entry),
-                SerdeMcCapability(token.capability),
-                token.signature,
-            )
-                .serialize(serializer)
+            let token_bytes: Vec<u8> = serde_ipld_dagcbor::to_vec(&token)
+                .map_err(serde::ser::Error::custom)?;
+            (SerdeEntry(entry), token_bytes).serialize(serializer)
         }
 
         pub fn deserialize<'de, D>(deserializer: D) -> Result<AuthorisedEntry, D::Error>
         where
             D: Deserializer<'de>,
         {
-            let (entry, capability, signature): (SerdeEntry, SerdeMcCapability, UserSignature) =
+            let (entry, token_bytes): (SerdeEntry, Vec<u8>) =
                 Deserialize::deserialize(deserializer)?;
-            let token = AuthorisationToken::new(capability.0, signature);
+            let token: AuthorisationToken =
+                serde_ipld_dagcbor::from_slice(&token_bytes)
+                    .map_err(de::Error::custom)?;
             AuthorisedEntry::new(entry.0, token).map_err(de::Error::custom)
         }
     }

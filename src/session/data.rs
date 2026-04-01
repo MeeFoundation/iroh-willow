@@ -7,11 +7,11 @@ use super::{
 use crate::{
     proto::{
         data_model::AuthorisedEntry,
-        wgps::{DataMessage, DataSendEntry, DataSendPayload, StaticToken},
+        wgps::{DataMessage, DataSendEntry, DataSendPayload, DynamicToken, StaticToken},
     },
     session::{channels::ChannelSenders, static_tokens::StaticTokens, Error, SessionId},
     store::{
-        traits::{EntryOrigin, EntryStorage, Storage, StoreEvent, SubscribeParams},
+        traits::{EntryOrigin, EntryStorage, RevocationStorage, Storage, StoreEvent, SubscribeParams},
         Store,
     },
     util::stream::CancelableReceiver,
@@ -86,8 +86,8 @@ impl<S: Storage> DataSender<S> {
 
     async fn send_entry(&mut self, authorised_entry: AuthorisedEntry) -> Result<(), Error> {
         let (entry, token) = authorised_entry.into_parts();
-        let static_token: StaticToken = token.capability.into();
-        let dynamic_token = token.signature;
+        let static_token: StaticToken = token.capability().into();
+        let dynamic_token: DynamicToken = token.invocation().clone().into();
         // TODO: partial payloads
         // let available = entry.payload_length;
         let static_token_handle = self
@@ -157,6 +157,9 @@ impl<S: Storage> DataReceiver<S> {
                 message.dynamic_token,
             )
             .await?;
+        if self.store.revocations().chain_is_revoked(&authorised_entry.token().capability()) {
+            return Err(Error::ChainRevoked);
+        }
         self.store
             .entries()
             .ingest_entry(&authorised_entry, EntryOrigin::Remote(self.session_id))?;
